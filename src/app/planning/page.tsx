@@ -240,7 +240,12 @@ export default function PlanningPage() {
                 onValueChange={(v) => v && setSelectedSaisonId(v)}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="Sélectionner une saison" />
+                  <SelectValue placeholder="Sélectionner une saison">
+                    {(val) => {
+                      const s = saisons.find((x) => x.id === val);
+                      return s ? s.nom : null;
+                    }}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {saisons.map((s) => (

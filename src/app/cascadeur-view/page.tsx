@@ -174,7 +174,12 @@ export default function CascadeurViewPage() {
                 onValueChange={(v) => v && setSelectedCascadeurId(v)}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="Sélectionner un cascadeur" />
+                  <SelectValue placeholder="Sélectionner un cascadeur">
+                    {(val) => {
+                      const c = cascadeurs.find((x) => x.id === val);
+                      return c ? `${c.prenom} ${c.nom}` : null;
+                    }}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {cascadeurs
@@ -195,7 +200,12 @@ export default function CascadeurViewPage() {
                 onValueChange={(v) => v && setSelectedSaisonId(v)}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="Sélectionner une saison" />
+                  <SelectValue placeholder="Sélectionner une saison">
+                    {(val) => {
+                      const s = saisons.find((x) => x.id === val);
+                      return s ? s.nom : null;
+                    }}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {saisons.map((s) => (
