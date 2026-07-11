@@ -510,7 +510,7 @@ export default function CascadeursPage() {
                         });
                       }}
                     >
-                      <SelectTrigger className="w-[180px]">
+                      <SelectTrigger className="flex-1 min-w-0">
                         <SelectValue>
                           {(val) => getSpectacleName(val || role.spectacleId)}
                         </SelectValue>
@@ -530,7 +530,7 @@ export default function CascadeursPage() {
                         v && updateRole(index, { roleId: v })
                       }
                     >
-                      <SelectTrigger className="w-[180px]">
+                      <SelectTrigger className="flex-1 min-w-0">
                         <SelectValue>
                           {(val) => getRoleName(role.spectacleId, val || role.roleId)}
                         </SelectValue>
@@ -552,7 +552,7 @@ export default function CascadeursPage() {
                         })
                       }
                     >
-                      <SelectTrigger className="w-[140px]">
+                      <SelectTrigger className="w-[130px] shrink-0">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -564,6 +564,7 @@ export default function CascadeursPage() {
                     <Button
                       variant="ghost"
                       size="icon"
+                      className="shrink-0"
                       onClick={() => removeRole(index)}
                     >
                       <Trash2 className="h-4 w-4 text-destructive" />
