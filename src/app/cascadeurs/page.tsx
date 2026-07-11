@@ -511,7 +511,9 @@ export default function CascadeursPage() {
                       }}
                     >
                       <SelectTrigger className="w-[180px]">
-                        <SelectValue placeholder={getSpectacleName(role.spectacleId)} />
+                        <SelectValue>
+                          {(val) => getSpectacleName(val || role.spectacleId)}
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
                         {spectacles.map((s) => (
@@ -529,7 +531,9 @@ export default function CascadeursPage() {
                       }
                     >
                       <SelectTrigger className="w-[180px]">
-                        <SelectValue placeholder={getRoleName(role.spectacleId, role.roleId)} />
+                        <SelectValue>
+                          {(val) => getRoleName(role.spectacleId, val || role.roleId)}
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
                         {spectacle?.roles.map((r) => (
