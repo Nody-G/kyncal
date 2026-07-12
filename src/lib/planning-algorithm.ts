@@ -146,7 +146,8 @@ function calculerScoreEquite(
   spectacleId: string,
   roleId: string,
   contraintes: ContrainteEnchainement[],
-  dateStr: string
+  dateStr: string,
+  nbRolesPrimaires: number
 ): number {
   // Exclusions → score infini
   if (!peutJouerRole(cascadeur, spectacleId, roleId)) return Infinity;
@@ -165,6 +166,11 @@ function calculerScoreEquite(
   const priorite = peutJouerRole(cascadeur, spectacleId, roleId);
   if (priorite === "primaire") scoreSecondaire -= 100;
   else scoreSecondaire -= 50;
+
+  // Rareté des rôles primaires : moins le cascadeur a de rôles primaires,
+  // plus il doit être prioritaire (il a moins d'opportunités de travailler)
+  // nbRolesPrimaires: 1 → -200, 2 → -100, 3+ → 0
+  scoreSecondaire -= Math.max(0, 200 - (nbRolesPrimaires - 1) * 100);
 
   // Moins de jours depuis le dernier repos = moins urgent de repos
   scoreSecondaire += state.joursDepuisDernierRepos * 10;
@@ -204,6 +210,13 @@ export function genererPlanning(
 
   // Filtrer les cascadeurs actifs
   const cascadeursActifs = cascadeurs.filter((c) => c.actif);
+
+  // Calculer le nombre de rôles primaires par cascadeur (pour le score de rareté)
+  const nbRolesPrimairesParCascadeur = new Map<string, number>();
+  for (const c of cascadeursActifs) {
+    const nb = c.roles.filter((r) => r.priorite === "primaire").length;
+    nbRolesPrimairesParCascadeur.set(c.id, nb);
+  }
 
   // Initialiser les états des cascadeurs
   const etats = new Map<string, CascadeurState>();
@@ -331,7 +344,8 @@ export function genererPlanning(
             poste.spectacleId,
             poste.roleId,
             config.contraintesEnchainement,
-            dateStr
+            dateStr,
+            nbRolesPrimairesParCascadeur.get(c.id) || 0
           );
           if (score < meilleurScore) {
             meilleurScore = score;
