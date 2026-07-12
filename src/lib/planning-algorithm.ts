@@ -383,7 +383,11 @@ export function genererPlanning(
       });
     }
 
-    // ── Étape 5 : Cascadeurs non assignés → repos ──
+    // ── Étape 5 : Cascadeurs non assignés ──
+    // Les cascadeurs sans poste disponible sont marqués "repos" pour l'affichage,
+    // mais leur compteur joursDepuisDernierRepos N'EST PAS reset.
+    // Seuls les cascadeurs forcés en repos (étape 2) ont le compteur reset.
+    // Cela permet aux 6j/1 de continuer leur streak même s'ils n'ont pas de rôle un jour.
     for (const c of disponibles) {
       if (!assignesCeJour.has(c.id)) {
         entrees.push({
@@ -391,11 +395,8 @@ export function genererPlanning(
           cascadeurId: c.id,
           assignation: { type: "repos" },
         });
-        const state = etats.get(c.id)!;
-        state.joursDepuisDernierRepos = 0;
-        state.joursDansRoleActuel = 0;
-        state.dernierRoleSpectacleId = null;
-        state.dernierRoleId = null;
+        // PAS de reset de joursDepuisDernierRepos ici !
+        // Le cascadeur garde son streak en cours.
       }
     }
   }
