@@ -187,9 +187,9 @@ function calculerScore(
   const moyenneGroupe = nbCascadeursGroupe > 0 ? totalJoursGroupe / nbCascadeursGroupe : 0;
   // Écart par rapport à la moyenne du groupe (positif = trop de jours)
   const ecart = state.totalJoursTravailles - moyenneGroupe;
-  // Pénalité forte : chaque jour d'écart = 500 points
-  // Cela dépasse la continuité (200) pour forcer l'équilibrage
-  score += ecart * 500;
+  // Pénalité massive : chaque jour d'écart = 5000 points
+  // Doit écraser TOUS les autres facteurs (priorité 1000, continuité 200, repos 10/jour)
+  score += ecart * 5000;
 
   // Moins de jours depuis le dernier repos = moins urgent de repos
   score += state.joursDepuisDernierRepos * 10;
