@@ -401,106 +401,145 @@ export function genererPlanning(
   }
 
   // ── Étape 6 : REPAIR PASS — Équilibrage final ──
-  // Stratégie : pour chaque cascadeur au-dessus de la médiane, chercher à
-  // convertir ses jours de travail excédentaires en repos, et pour chaque
-  // cascadeur en dessous, chercher à convertir ses repos en travail.
-  // On itère jusqu'à convergence (écart ≤ 1) ou plus de progrès possible.
-  const REPAIR_MAX_ITER = 200;
-  let repairIter = 0;
-  let ecartActuel = Infinity;
+  // Équilibrer SÉPARÉMENT par typeRepos (5j/1 et 6j/1).
+  // Chaque swap vérifie les contraintes de repos obligatoire.
 
-  while (repairIter < REPAIR_MAX_ITER) {
-    repairIter++;
+  const entreesIndex = new Map<string, EntreePlanning>();
+  for (const e of entrees) {
+    entreesIndex.set(`${e.date}|${e.cascadeurId}`, e);
+  }
+  const allDates = Array.from(new Set(entrees.map((e) => e.date))).sort();
 
-    // Recalculer les totaux
-    const totaux = new Map<string, number>();
-    for (const c of cascadeursActifs) {
-      totaux.set(c.id, 0);
-    }
-    for (const e of entrees) {
-      if (e.assignation.type === "travail") {
-        totaux.set(e.cascadeurId, (totaux.get(e.cascadeurId) || 0) + 1);
+  // Helper : vérifier si un cascadeur peut travailler un jour donné
+  // (vérifie les contraintes de repos consécutifs)
+  function peutTravaillerLe(
+    cascadeurId: string,
+    dateStr: string
+  ): boolean {
+    const cascadeur = cascadeursActifs.find((c) => c.id === cascadeurId);
+    if (!cascadeur) return false;
+    const maxJours = getMaxJoursAvantRepos(cascadeur.typeRepos);
+
+    // Trouver l'index de ce jour dans allDates
+    const dateIdx = allDates.indexOf(dateStr);
+    if (dateIdx < 0) return false;
+
+    // Compter les jours de travail consécutifs AVANT cette date
+    let consecutifs = 0;
+    for (let i = dateIdx - 1; i >= 0; i--) {
+      const e = entreesIndex.get(`${allDates[i]}|${cascadeurId}`);
+      if (e && e.assignation.type === "travail") {
+        consecutifs++;
+      } else {
+        break;
       }
     }
+    return consecutifs < maxJours;
+  }
 
-    // Trier par totalJoursTravailles
-    const sorted = cascadeursActifs
-      .map((c) => ({ id: c.id, total: totaux.get(c.id) || 0, cascadeur: c }))
-      .sort((a, b) => a.total - b.total);
+  // Équilibrer chaque groupe typeRepos séparément
+  for (const typeRepos of ["6j/1", "5j/1"]) {
+    const membresGroupe = cascadeursActifs.filter(
+      (c) => c.typeRepos === typeRepos
+    );
+    if (membresGroupe.length === 0) continue;
 
-    const min = sorted[0];
-    const max = sorted[sorted.length - 1];
-    const nouvelEcart = max.total - min.total;
+    const REPAIR_MAX_ITER = 200;
+    let repairIter = 0;
+    let ecartActuel = Infinity;
 
-    if (nouvelEcart <= 1) break; // Équilibré (±1)
-    if (nouvelEcart === ecartActuel) break; // Plus de progrès possible
-    ecartActuel = nouvelEcart;
+    while (repairIter < REPAIR_MAX_ITER) {
+      repairIter++;
 
-    // Indexer les entrées par date+cascadeur
-    const entreesIndex = new Map<string, EntreePlanning>();
-    for (const e of entrees) {
-      entreesIndex.set(`${e.date}|${e.cascadeurId}`, e);
-    }
+      // Recalculer les totaux du groupe
+      const totaux = new Map<string, number>();
+      for (const c of membresGroupe) {
+        totaux.set(c.id, 0);
+      }
+      for (const e of entrees) {
+        if (
+          e.assignation.type === "travail" &&
+          membresGroupe.some((c) => c.id === e.cascadeurId)
+        ) {
+          totaux.set(e.cascadeurId, (totaux.get(e.cascadeurId) || 0) + 1);
+        }
+      }
 
-    let swapped = false;
-    const allDates = Array.from(new Set(entrees.map((e) => e.date))).sort();
+      const sorted = membresGroupe
+        .map((c) => ({
+          id: c.id,
+          total: totaux.get(c.id) || 0,
+          cascadeur: c,
+        }))
+        .sort((a, b) => a.total - b.total);
 
-    // Stratégie 1 : swap direct MAX travail ↔ MIN repos le même jour
-    for (const dateStr of allDates) {
-      if (max.total - min.total <= 1) break;
-      const entryMax = entreesIndex.get(`${dateStr}|${max.id}`);
-      const entryMin = entreesIndex.get(`${dateStr}|${min.id}`);
+      const min = sorted[0];
+      const max = sorted[sorted.length - 1];
+      const nouvelEcart = max.total - min.total;
 
-      if (!entryMax || !entryMin) continue;
-      if (entryMax.assignation.type !== "travail") continue;
-      if (entryMin.assignation.type !== "repos") continue;
+      if (nouvelEcart <= 1) break;
+      if (ecartActuel !== Infinity && nouvelEcart >= ecartActuel) break;
+      ecartActuel = nouvelEcart;
 
-      // Vérifier que min peut jouer le rôle de max
-      const { spectacleId, roleId } = entryMax.assignation;
-      if (!getPriorite(min.cascadeur, spectacleId, roleId)) continue;
-      if (isAbsent(min.cascadeur, dateStr)) continue;
+      let swapped = false;
 
-      // SWAP : max → repos, min → travail
-      entryMax.assignation = { type: "repos" };
-      entryMin.assignation = { type: "travail", spectacleId, roleId };
-      max.total--;
-      min.total++;
-      swapped = true;
-    }
-
-    // Stratégie 2 : si pas de swap direct possible, essayer swap en chaîne
-    // MAX travaille jour X → trouver cascadeur MEDIAN qui est en repos jour X
-    // et qui peut jouer le rôle, puis donner le repos à MAX
-    if (!swapped && max.total - min.total > 1) {
+      // Stratégie 1 : swap direct MAX travail ↔ MIN repos le même jour
       for (const dateStr of allDates) {
         if (max.total - min.total <= 1) break;
         const entryMax = entreesIndex.get(`${dateStr}|${max.id}`);
-        if (!entryMax || entryMax.assignation.type !== "travail") continue;
+        const entryMin = entreesIndex.get(`${dateStr}|${min.id}`);
+
+        if (!entryMax || !entryMin) continue;
+        if (entryMax.assignation.type !== "travail") continue;
+        if (entryMin.assignation.type !== "repos") continue;
 
         const { spectacleId, roleId } = entryMax.assignation;
+        if (!getPriorite(min.cascadeur, spectacleId, roleId)) continue;
+        if (isAbsent(min.cascadeur, dateStr)) continue;
 
-        // Chercher un cascadeur disponible ce jour (en repos, pas absent,
-        // a le rôle, et n'a pas déjà trop peu de jours travaillés)
-        for (const mid of sorted) {
-          if (mid.id === max.id || mid.id === min.id) continue;
-          if (mid.total >= max.total - 1) continue; // pas la peine si déjà haut
-          const entryMid = entreesIndex.get(`${dateStr}|${mid.id}`);
-          if (!entryMid || entryMid.assignation.type !== "repos") continue;
-          if (!getPriorite(mid.cascadeur, spectacleId, roleId)) continue;
-          if (isAbsent(mid.cascadeur, dateStr)) continue;
+        // Vérifier contraintes de repos pour min
+        if (!peutTravaillerLe(min.id, dateStr)) continue;
 
-          // SWAP : max → repos, mid → travail
-          entryMax.assignation = { type: "repos" };
-          entryMid.assignation = { type: "travail", spectacleId, roleId };
-          max.total--;
-          mid.total++;
-          swapped = true;
-          break;
+        // SWAP : max → repos, min → travail
+        entryMax.assignation = { type: "repos" };
+        entryMin.assignation = { type: "travail", spectacleId, roleId };
+        max.total--;
+        min.total++;
+        swapped = true;
+      }
+
+      // Stratégie 2 : swap en chaîne via cascadeur médian
+      if (!swapped && max.total - min.total > 1) {
+        for (const dateStr of allDates) {
+          if (max.total - min.total <= 1) break;
+          const entryMax = entreesIndex.get(`${dateStr}|${max.id}`);
+          if (!entryMax || entryMax.assignation.type !== "travail") continue;
+
+          const { spectacleId, roleId } = entryMax.assignation;
+
+          for (const mid of sorted) {
+            if (mid.id === max.id || mid.id === min.id) continue;
+            if (mid.total >= max.total - 1) continue;
+            const entryMid = entreesIndex.get(`${dateStr}|${mid.id}`);
+            if (!entryMid || entryMid.assignation.type !== "repos") continue;
+            if (!getPriorite(mid.cascadeur, spectacleId, roleId)) continue;
+            if (isAbsent(mid.cascadeur, dateStr)) continue;
+
+            // Vérifier contraintes de repos pour mid
+            if (!peutTravaillerLe(mid.id, dateStr)) continue;
+
+            entryMax.assignation = { type: "repos" };
+            entryMid.assignation = { type: "travail", spectacleId, roleId };
+            max.total--;
+            mid.total++;
+            swapped = true;
+            break;
+          }
         }
       }
-    }
 
-    if (!swapped) break; // Plus aucun swap possible
+      if (!swapped) break;
+    }
   }
 
   // ── Étape 7 : Rapport d'équité ──
