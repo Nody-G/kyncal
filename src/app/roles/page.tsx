@@ -240,9 +240,19 @@ export default function RolesPage() {
                         </CardDescription>
                       )}
                     </div>
-                    <Badge variant="outline">
-                      {role.nbCascadeursRequis} requis
-                    </Badge>
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="gap-1">
+                        <Star className="h-3 w-3 text-yellow-500" />
+                        {primaires.length} P
+                      </Badge>
+                      <Badge variant="outline" className="gap-1">
+                        <Shield className="h-3 w-3 text-blue-500" />
+                        {secondaires.length} S
+                      </Badge>
+                      <Badge variant="secondary">
+                        {role.nbCascadeursRequis} requis
+                      </Badge>
+                    </div>
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4">

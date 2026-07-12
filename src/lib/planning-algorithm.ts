@@ -347,24 +347,34 @@ export function genererPlanning(
       }
     }
 
-    // ---- Étape 4 : Les cascadeurs non assignés prennent un repos ----
+    // ---- Étape 4 : Gérer les cascadeurs non assignés ----
     const tousAssignes = new Set<string>();
     for (const entry of entrees.filter((e) => e.date === dateStr)) {
       tousAssignes.add(entry.cascadeurId);
     }
 
+    // Déterminer si au moins un spectacle joue ce jour
+    const auMoinsUnSpectacleJoue = spectaclesSaison.some((s) => {
+      if (!s.joursDiffusion || s.joursDiffusion.length === 0) return true;
+      return s.joursDiffusion.includes(jourSemaine);
+    });
+
     for (const c of cascadeursPeuventTravailler) {
       if (!tousAssignes.has(c.id)) {
-        entrees.push({
-          date: dateStr,
-          cascadeurId: c.id,
-          assignation: { type: "repos" },
-        });
-        const state = etats.get(c.id)!;
-        state.joursTravaillesConsecutifs = 0;
-        state.joursReposConsecutifs++;
-        // Le repos ne réinitialise pas joursDepuisDernierRepos
-        // car il n'a pas travaillé
+        if (auMoinsUnSpectacleJoue) {
+          // Un spectacle joue mais ce cascadeur n'a pas été assigné → repos
+          entrees.push({
+            date: dateStr,
+            cascadeurId: c.id,
+            assignation: { type: "repos" },
+          });
+          const state = etats.get(c.id)!;
+          state.joursTravaillesConsecutifs = 0;
+          state.joursReposConsecutifs++;
+        }
+        // Si aucun spectacle ne joue ce jour, c'est un jour "libre" :
+        // on ne crée pas d'entrée et on ne touche pas au compteur de repos.
+        // Le cascadeur garde son cycle en cours (joursDepuisDernierRepos intact).
       }
     }
   }
