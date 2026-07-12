@@ -84,7 +84,7 @@ export default function PlanningPage() {
   const [currentWeekStart, setCurrentWeekStart] = useState<Date>(
     startOfWeek(new Date(), { weekStartsOn: 1 })
   );
-  const [viewMode, setViewMode] = useState<"calendrier" | "cascadeur">("calendrier");
+  const [viewMode, setViewMode] = useState<"calendrier" | "cascadeur" | "resume">("calendrier");
   const [showContraintes, setShowContraintes] = useState(false);
   const [contraintes, setContraintes] = useState<ContrainteEnchainement[]>([]);
 
@@ -541,6 +541,13 @@ export default function PlanningPage() {
             >
               Vue par cascadeur
             </Button>
+            <Button
+              variant={viewMode === "resume" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setViewMode("resume")}
+            >
+              Résumé
+            </Button>
           </div>
 
           <div className="flex items-center gap-2">
@@ -757,6 +764,120 @@ export default function PlanningPage() {
               );
             })}
         </div>
+      )}
+
+      {/* Vue Résumé — jours travaillés par cascadeur sur la saison */}
+      {planning && viewMode === "resume" && selectedSaison && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              Résumé — {selectedSaison.nom}
+            </CardTitle>
+            <CardDescription>
+              Nombre de jours travaillés, repos et absences par cascadeur sur toute la saison
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b">
+                    <th className="p-2 text-left text-sm font-medium text-muted-foreground sticky left-0 bg-card z-10">
+                      Cascadeur
+                    </th>
+                    <th className="p-2 text-center text-sm font-medium text-muted-foreground">
+                      Type repos
+                    </th>
+                    <th className="p-2 text-center text-sm font-medium text-muted-foreground">
+                      Travail
+                    </th>
+                    <th className="p-2 text-center text-sm font-medium text-muted-foreground">
+                      Repos
+                    </th>
+                    <th className="p-2 text-center text-sm font-medium text-muted-foreground">
+                      Absent
+                    </th>
+                    <th className="p-2 text-center text-sm font-medium text-muted-foreground">
+                      Libre
+                    </th>
+                    <th className="p-2 text-center text-sm font-medium text-muted-foreground">
+                      % travail
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cascadeurs
+                    .filter((c) => c.actif)
+                    .sort((a, b) => a.nom.localeCompare(b.nom))
+                    .map((c) => {
+                      const entreesCascadeur = planning.entrees.filter(
+                        (e) => e.cascadeurId === c.id
+                      );
+                      const joursTravail = entreesCascadeur.filter(
+                        (e) => e.assignation.type === "travail"
+                      ).length;
+                      const joursRepos = entreesCascadeur.filter(
+                        (e) => e.assignation.type === "repos"
+                      ).length;
+                      const joursAbsence = entreesCascadeur.filter(
+                        (e) => e.assignation.type === "absent"
+                      ).length;
+                      const totalSaison = eachDayOfInterval({
+                        start: parseISO(selectedSaison.dateDebut),
+                        end: parseISO(selectedSaison.dateFin),
+                      }).length;
+                      const joursLibres = totalSaison - joursTravail - joursRepos - joursAbsence;
+                      const pctTravail = totalSaison > 0 ? Math.round((joursTravail / totalSaison) * 100) : 0;
+
+                      return (
+                        <tr key={c.id} className="border-b hover:bg-muted/50">
+                          <td className="p-2 text-sm font-medium sticky left-0 bg-card z-10">
+                            {c.prenom} {c.nom}
+                          </td>
+                          <td className="p-2 text-center text-sm text-muted-foreground">
+                            {c.typeRepos}
+                          </td>
+                          <td className="p-2 text-center">
+                            <Badge variant="default" className="text-xs">
+                              {joursTravail}
+                            </Badge>
+                          </td>
+                          <td className="p-2 text-center">
+                            <Badge variant="secondary" className="text-xs">
+                              {joursRepos}
+                            </Badge>
+                          </td>
+                          <td className="p-2 text-center">
+                            <Badge variant="destructive" className="text-xs">
+                              {joursAbsence}
+                            </Badge>
+                          </td>
+                          <td className="p-2 text-center">
+                            <Badge variant="outline" className="text-xs">
+                              {joursLibres}
+                            </Badge>
+                          </td>
+                          <td className="p-2 text-center text-sm">
+                            <div className="flex items-center gap-2 justify-center">
+                              <div className="w-16 h-2 bg-muted rounded-full overflow-hidden">
+                                <div
+                                  className="h-full bg-primary rounded-full"
+                                  style={{ width: `${pctTravail}%` }}
+                                />
+                              </div>
+                              <span className="text-xs text-muted-foreground w-8">
+                                {pctTravail}%
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* Empty state */}

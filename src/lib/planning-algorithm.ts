@@ -224,6 +224,9 @@ export function genererPlanning(
   for (const jour of jours) {
     const dateStr = format(jour, "yyyy-MM-dd");
 
+    // Set des cascadeurs déjà assignés à un rôle ce jour (1 rôle max par cascadeur par jour)
+    const assignesCeJour = new Set<string>();
+
     // ---- Étape 1 : Gérer les absences ----
     for (const c of cascadeursActifs) {
       if (isAbsent(c, dateStr)) {
@@ -294,8 +297,10 @@ export function genererPlanning(
         const nbRequis = role.nbCascadeursRequis;
 
         // Trier les cascadeurs disponibles par score (meilleur d'abord)
+        // Exclure ceux déjà assignés à un AUTRE rôle ce jour (un cascadeur = 1 rôle/jour)
         const candidats = cascadeursPeuventTravailler
           .filter((c) => !assignes.includes(c.id))
+          .filter((c) => !assignesCeJour.has(c.id)) // déjà assigné à un rôle ce jour
           .map((c) => ({
             cascadeur: c,
             score: calculerScore(
@@ -314,6 +319,7 @@ export function genererPlanning(
           if (assignes.length >= nbRequis) break;
 
           assignes.push(candidat.cascadeur.id);
+          assignesCeJour.add(candidat.cascadeur.id);
 
           const state = etats.get(candidat.cascadeur.id)!;
 
