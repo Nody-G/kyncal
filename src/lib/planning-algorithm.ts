@@ -34,6 +34,7 @@ interface CascadeurState {
   joursDansRoleActuel: number;
   reposPrisCycle: number; // repos pris dans le cycle actuel (6 ou 5 jours)
   joursDepuisDernierRepos: number;
+  totalJoursTravailles: number; // total sur la saison (pour équilibrage)
 }
 
 interface AlgorithmeConfig {
@@ -137,7 +138,8 @@ function calculerScore(
   spectacleId: string,
   roleId: string,
   contraintes: ContrainteEnchainement[],
-  dateStr: string
+  dateStr: string,
+  etats: Map<string, CascadeurState>
 ): number {
   // Ne peut pas jouer ce rôle → score infini
   const priorite = peutJouerRole(cascadeur, spectacleId, roleId);
@@ -167,6 +169,21 @@ function calculerScore(
   ) {
     score -= 200; // forte préférence pour la continuité
   }
+
+  // Équilibrage : pénaliser les cascadeurs qui ont déjà plus de jours travaillés
+  // Calculer la moyenne des jours travaillés parmi tous les cascadeurs actifs
+  let totalJours = 0;
+  let nbCascadeurs = 0;
+  for (const [, s] of etats) {
+    totalJours += s.totalJoursTravailles;
+    nbCascadeurs++;
+  }
+  const moyenne = nbCascadeurs > 0 ? totalJours / nbCascadeurs : 0;
+  // Écart par rapport à la moyenne (positif = trop de jours)
+  const ecart = state.totalJoursTravailles - moyenne;
+  // Pénalité forte : chaque jour d'écart = 500 points
+  // Cela dépasse la continuité (200) pour forcer l'équilibrage
+  score += ecart * 500;
 
   // Moins de jours depuis le dernier repos = moins urgent de repos
   score += state.joursDepuisDernierRepos * 10;
@@ -214,6 +231,7 @@ export function genererPlanning(
       joursDansRoleActuel: 0,
       reposPrisCycle: 0,
       joursDepuisDernierRepos: 0,
+      totalJoursTravailles: 0,
     });
   }
 
@@ -309,7 +327,8 @@ export function genererPlanning(
               spectacle.id,
               role.id,
               config.contraintesEnchainement,
-              dateStr
+              dateStr,
+              etats
             ),
           }))
           .filter((c) => c.score < Infinity)
@@ -335,6 +354,7 @@ export function genererPlanning(
           state.joursReposConsecutifs = 0;
           state.joursDepuisDernierRepos++;
           state.joursDansRoleActuel++;
+          state.totalJoursTravailles++;
           state.dernierRoleSpectacleId = spectacle.id;
           state.dernierRoleId = role.id;
 
