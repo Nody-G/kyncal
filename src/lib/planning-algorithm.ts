@@ -481,7 +481,39 @@ export function genererPlanning(
       if (swapped) break; // Recommencer le recalcul des totaux
     }
 
-    if (!anySwap) break; // Plus de swaps possibles dans aucun groupe
+    // Si aucun swap n'a été possible dans AUCUN groupe, essayer de forcer
+    // le repos du cascadeur MAX même sans remplaçant (poste non-pourvu)
+    if (!anySwap) {
+      let forced = false;
+      for (const [, membres] of groupes) {
+        let maxId = "";
+        let maxVal = -1;
+        let minVal = Infinity;
+        for (const m of membres) {
+          const val = totaux.get(m.id) || 0;
+          if (val > maxVal) { maxVal = val; }
+          if (val < minVal) { minVal = val; }
+        }
+        if (maxVal - minVal <= 1) continue;
+
+        // Forcer le repos du cascadeur MAX un jour où il travaille
+        const entreesIndex2 = new Map<string, EntreePlanning>();
+        for (const e of entrees) {
+          entreesIndex2.set(`${e.date}|${e.cascadeurId}`, e);
+        }
+        const allDates2 = Array.from(new Set(entrees.map((e) => e.date))).sort();
+        for (const dateStr of allDates2) {
+          const entryMax = entreesIndex2.get(`${dateStr}|${maxId}`);
+          if (!entryMax || entryMax.assignation.type !== "travail") continue;
+          // Forcer en repos sans remplaçant
+          entryMax.assignation = { type: "repos" };
+          forced = true;
+          break;
+        }
+        if (forced) break;
+      }
+      if (!forced) break; // Rien à faire
+    }
   }
 
   return {
