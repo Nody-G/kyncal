@@ -4,11 +4,9 @@
 
 import { v4 as uuidv4 } from "uuid";
 import {
-  addDays,
   format,
   parseISO,
   eachDayOfInterval,
-  differenceInDays,
 } from "date-fns";
 import type {
   Cascadeur,
@@ -16,7 +14,6 @@ import type {
   Saison,
   Planning,
   EntreePlanning,
-  TypeEntree,
   ContrainteEnchainement,
 } from "@/types";
 import { getJourSemaine } from "@/types";
@@ -27,18 +24,26 @@ import { getJourSemaine } from "@/types";
 
 interface CascadeurState {
   cascadeurId: string;
-  joursTravaillesConsecutifs: number;
-  joursReposConsecutifs: number;
   dernierRoleSpectacleId: string | null;
   dernierRoleId: string | null;
   joursDansRoleActuel: number;
-  reposPrisCycle: number;
   joursDepuisDernierRepos: number;
   totalJoursTravailles: number;
 }
 
 interface AlgorithmeConfig {
   contraintesEnchainement: ContrainteEnchainement[];
+}
+
+/** Rapport de génération : warnings et diagnostics */
+export interface LigneRapport {
+  type: "warning" | "info";
+  message: string;
+}
+
+export interface ResultatGeneration {
+  planning: Planning;
+  rapport: LigneRapport[];
 }
 
 // ============================================================
@@ -50,24 +55,13 @@ function getMaxJoursAvantRepos(typeRepos: string): number {
   return 6; // défaut "6j/1"
 }
 
-function getRoleName(spectacle: Spectacle, roleId: string): string {
-  return spectacle.roles.find((r) => r.id === roleId)?.nom || roleId;
-}
-
-/**
- * Vérifie si un cascadeur est absent à une date donnée
- */
 function isAbsent(cascadeur: Cascadeur, dateStr: string): boolean {
   return cascadeur.absences.some(
     (a) => dateStr >= a.dateDebut && dateStr <= a.dateFin
   );
 }
 
-/**
- * Vérifie si un cascadeur peut jouer un rôle donné
- * (a ce rôle en primaire ou secondaire)
- */
-function peutJouerRole(
+function getPriorite(
   cascadeur: Cascadeur,
   spectacleId: string,
   roleId: string
@@ -78,9 +72,6 @@ function peutJouerRole(
   return role?.priorite || null;
 }
 
-/**
- * Vérifie les contraintes d'enchaînement min/max
- */
 function respecteEnchainement(
   state: CascadeurState,
   spectacleId: string,
@@ -92,7 +83,7 @@ function respecteEnchainement(
   );
   if (!contrainte) return true;
 
-  // Si le cascadeur est dans un autre rôle, vérifier qu'il a atteint le min
+  // Si le cascadeur est dans un rôle différent, vérifier qu'il a atteint le min
   if (
     state.dernierRoleSpectacleId &&
     state.dernierRoleId &&
@@ -112,15 +103,12 @@ function respecteEnchainement(
     }
   }
 
-  // Vérifier le maximum
+  // Vérifier le maximum dans le même rôle
   if (
     state.dernierRoleSpectacleId === spectacleId &&
     state.dernierRoleId === roleId
   ) {
-    if (
-      contrainte.joursMax > 0 &&
-      state.joursDansRoleActuel >= contrainte.joursMax
-    ) {
+    if (contrainte.joursMax > 0 && state.joursDansRoleActuel >= contrainte.joursMax) {
       return false;
     }
   }
@@ -129,79 +117,50 @@ function respecteEnchainement(
 }
 
 // ============================================================
-// SCORE D'ÉQUITÉ — totalJoursTravailles DOMINE
+// SCORE D'ÉQUITÉ — SIMPLE
+// Score = totalJoursTravailles × 1000 + pénalité secondaire
+// Le cascadeur avec le MOINS de jours travaillés gagne TOUJOURS.
 // ============================================================
 
-/**
- * Calcule le score d'équité pour un cascadeur.
- * Score plus BAS = meilleur candidat.
- *
- * Le facteur DOMINANT est totalJoursTravailles (×100000).
- * Le cascadeur avec le MOINS de jours travaillés gagne TOUJOURS.
- * Les critères secondaires ne départagent qu'à égalité parfaite.
- */
-function calculerScoreEquite(
+function calculerScore(
   cascadeur: Cascadeur,
   state: CascadeurState,
   spectacleId: string,
   roleId: string,
   contraintes: ContrainteEnchainement[],
-  dateStr: string,
-  nbRolesPrimaires: number
+  dateStr: string
 ): number {
   // Exclusions → score infini
-  if (!peutJouerRole(cascadeur, spectacleId, roleId)) return Infinity;
+  if (!getPriorite(cascadeur, spectacleId, roleId)) return Infinity;
   if (isAbsent(cascadeur, dateStr)) return Infinity;
   const maxJours = getMaxJoursAvantRepos(cascadeur.typeRepos);
   if (state.joursDepuisDernierRepos >= maxJours) return Infinity;
+  if (!respecteEnchainement(state, spectacleId, roleId, contraintes)) return Infinity;
 
-  // ── Équilibrage : totalJoursTravailles × 100000 ──
-  // Le cascadeur avec le MOINS de jours travaillés gagne TOUJOURS.
-  const scoreEquilibrage = state.totalJoursTravailles * 100000;
+  // Équilibrage : totalJoursTravailles domine tout
+  let score = state.totalJoursTravailles * 1000;
 
-  // ── Critères secondaires légers ──
-  let scoreSecondaire = 0;
+  // Primaire > secondaire (petit bonus)
+  const priorite = getPriorite(cascadeur, spectacleId, roleId);
+  if (priorite === "secondaire") score += 10;
 
-  // Primaire a priorité sur secondaire
-  const priorite = peutJouerRole(cascadeur, spectacleId, roleId);
-  if (priorite === "primaire") scoreSecondaire -= 100;
-  else scoreSecondaire -= 50;
-
-  // Rareté des rôles primaires : moins le cascadeur a de rôles primaires,
-  // plus il doit être prioritaire (il a moins d'opportunités de travailler)
-  // nbRolesPrimaires: 1 → -200, 2 → -100, 3+ → 0
-  scoreSecondaire -= Math.max(0, 200 - (nbRolesPrimaires - 1) * 100);
-
-  // Moins de jours depuis le dernier repos = moins urgent de repos
-  scoreSecondaire += state.joursDepuisDernierRepos * 10;
-
-  return scoreEquilibrage + scoreSecondaire;
+  return score;
 }
 
 // ============================================================
 // ALGORITHME PRINCIPAL
 // ============================================================
 
-/**
- * Génère un planning complet pour une saison.
- *
- * APPROCHE PAR JOUR (pas rôle par rôle) :
- * 1. Pour chaque jour, collecter TOUS les postes ouverts (spectacle+roleId)
- * 2. Pour chaque cascadeur disponible, calculer son MEILLEUR score parmi
- *    tous les postes (en tenant compte de primaire/secondaire)
- * 3. Trier les cascadeurs par totalJoursTravailles croissant
- * 4. Assigner le cascadeur le moins travaillé à son meilleur poste disponible
- * 5. Répéter jusqu'à remplir tous les postes ou épuiser les cascadeurs
- */
 export function genererPlanning(
   saison: Saison,
   spectacles: Spectacle[],
   cascadeurs: Cascadeur[],
   config: AlgorithmeConfig
-): Planning {
+): ResultatGeneration {
   const dateDebut = parseISO(saison.dateDebut);
   const dateFin = parseISO(saison.dateFin);
   const jours = eachDayOfInterval({ start: dateDebut, end: dateFin });
+  const rapport: LigneRapport[] = [];
 
   // Filtrer les spectacles actifs de la saison
   const spectaclesSaison = spectacles.filter(
@@ -211,11 +170,33 @@ export function genererPlanning(
   // Filtrer les cascadeurs actifs
   const cascadeursActifs = cascadeurs.filter((c) => c.actif);
 
-  // Calculer le nombre de rôles primaires par cascadeur (pour le score de rareté)
-  const nbRolesPrimairesParCascadeur = new Map<string, number>();
-  for (const c of cascadeursActifs) {
-    const nb = c.roles.filter((r) => r.priorite === "primaire").length;
-    nbRolesPrimairesParCascadeur.set(c.id, nb);
+  // ── VÉRIFICATION PRÉALABLE : rôles sans cascadeur ──
+  for (const spectacle of spectaclesSaison) {
+    for (const role of spectacle.roles) {
+      const primaires = cascadeursActifs.filter(
+        (c) => getPriorite(c, spectacle.id, role.id) === "primaire"
+      );
+      const secondaires = cascadeursActifs.filter(
+        (c) => getPriorite(c, spectacle.id, role.id) === "secondaire"
+      );
+
+      if (primaires.length === 0 && secondaires.length === 0) {
+        rapport.push({
+          type: "warning",
+          message: `Le rôle "${role.nom}" du spectacle "${spectacle.nom}" n'a AUCUN cascadeur assigné. Il sera toujours vide.`,
+        });
+      } else if (primaires.length === 0) {
+        rapport.push({
+          type: "warning",
+          message: `Le rôle "${role.nom}" du spectacle "${spectacle.nom}" n'a que des cascadeurs secondaires (${secondaires.map((c) => c.prenom + " " + c.nom).join(", ")}). Le remplissage dépendra entièrement d'eux.`,
+        });
+      } else if (primaires.length < role.nbCascadeursRequis) {
+        rapport.push({
+          type: "warning",
+          message: `Le rôle "${role.nom}" du spectacle "${spectacle.nom}" nécessite ${role.nbCascadeursRequis} cascadeur(s) mais n'a que ${primaires.length} primaire(s). Les secondaires devront compléter.`,
+        });
+      }
+    }
   }
 
   // Initialiser les états des cascadeurs
@@ -223,12 +204,9 @@ export function genererPlanning(
   for (const c of cascadeursActifs) {
     etats.set(c.id, {
       cascadeurId: c.id,
-      joursTravaillesConsecutifs: 0,
-      joursReposConsecutifs: 0,
       dernierRoleSpectacleId: null,
       dernierRoleId: null,
       joursDansRoleActuel: 0,
-      reposPrisCycle: 0,
       joursDepuisDernierRepos: 0,
       totalJoursTravailles: 0,
     });
@@ -256,8 +234,6 @@ export function genererPlanning(
           },
         });
         const state = etats.get(c.id)!;
-        state.joursTravaillesConsecutifs = 0;
-        state.joursReposConsecutifs = 0;
         state.joursDepuisDernierRepos = 0;
         state.joursDansRoleActuel = 0;
         state.dernierRoleSpectacleId = null;
@@ -273,14 +249,11 @@ export function genererPlanning(
       const maxJours = getMaxJoursAvantRepos(c.typeRepos);
       if (state.joursDepuisDernierRepos >= maxJours) {
         doiventReposer.add(c.id);
-        // Assigner le repos obligatoire
         entrees.push({
           date: dateStr,
           cascadeurId: c.id,
           assignation: { type: "repos" },
         });
-        state.joursTravaillesConsecutifs = 0;
-        state.joursReposConsecutifs = 1;
         state.joursDepuisDernierRepos = 0;
         state.joursDansRoleActuel = 0;
         state.dernierRoleSpectacleId = null;
@@ -318,51 +291,59 @@ export function genererPlanning(
     }
 
     // ── Étape 4 : Assignation équitable par jour ──
-    // On assigne les cascadeurs un par un, en priorisant ceux avec le
-    // MOINS de totalJoursTravailles. Chaque cascadeur est assigné au
-    // MEILLEUR poste pour lui (primaire > secondaire, continuité, etc.)
+    // Prioriser les postes avec le MOINS de candidats primaires d'abord
+    // (les rôles "critiques" sont remplis en premier)
     const assignesCeJour = new Set<string>();
-    const postesRestants = [...postesOuverts]; // copie mutable
+    const postesRestants = [...postesOuverts];
+
+    // Trier les postes : ceux avec le moins de candidats primaires d'abord
+    postesRestants.sort((a, b) => {
+      const candidatsA = disponibles.filter(
+        (c) =>
+          !assignesCeJour.has(c.id) &&
+          getPriorite(c, a.spectacleId, a.roleId) === "primaire"
+      ).length;
+      const candidatsB = disponibles.filter(
+        (c) =>
+          !assignesCeJour.has(c.id) &&
+          getPriorite(c, b.spectacleId, b.roleId) === "primaire"
+      ).length;
+      return candidatsA - candidatsB;
+    });
 
     while (postesRestants.length > 0) {
-      // Chercher le meilleur cascadeur pour le prochain poste
-      // On teste chaque cascadeur contre chaque poste et on prend
-      // la meilleure combinaison (score le plus bas)
+      const poste = postesRestants[0]; // Prendre le poste le plus critique
+
+      // Chercher le meilleur cascadeur pour ce poste
       let meilleurScore = Infinity;
       let meilleurCascadeur: (typeof disponibles)[number] | null = null;
-      let meilleurPosteIdx = -1;
 
       for (const c of disponibles) {
         if (assignesCeJour.has(c.id)) continue;
         const state = etats.get(c.id)!;
-
-        for (let pi = 0; pi < postesRestants.length; pi++) {
-          const poste = postesRestants[pi];
-          const score = calculerScoreEquite(
-            c,
-            state,
-            poste.spectacleId,
-            poste.roleId,
-            config.contraintesEnchainement,
-            dateStr,
-            nbRolesPrimairesParCascadeur.get(c.id) || 0
-          );
-          if (score < meilleurScore) {
-            meilleurScore = score;
-            meilleurCascadeur = c;
-            meilleurPosteIdx = pi;
-          }
+        const score = calculerScore(
+          c,
+          state,
+          poste.spectacleId,
+          poste.roleId,
+          config.contraintesEnchainement,
+          dateStr
+        );
+        if (score < meilleurScore) {
+          meilleurScore = score;
+          meilleurCascadeur = c;
         }
       }
 
       if (!meilleurCascadeur || meilleurScore === Infinity) {
-        // Plus aucun cascadeur ne peut remplir les postes restants
-        break;
+        // Plus aucun cascadeur ne peut remplir ce poste
+        // Passer au poste suivant
+        postesRestants.shift();
+        continue;
       }
 
-      // Assigner le meilleur cascadeur au poste
-      const poste = postesRestants[meilleurPosteIdx];
-      postesRestants.splice(meilleurPosteIdx, 1);
+      // Assigner
+      postesRestants.shift();
       assignesCeJour.add(meilleurCascadeur.id);
 
       const state = etats.get(meilleurCascadeur.id)!;
@@ -375,8 +356,6 @@ export function genererPlanning(
         state.joursDansRoleActuel = 0;
       }
 
-      state.joursTravaillesConsecutifs++;
-      state.joursReposConsecutifs = 0;
       state.joursDepuisDernierRepos++;
       state.joursDansRoleActuel++;
       state.totalJoursTravailles++;
@@ -395,35 +374,30 @@ export function genererPlanning(
     }
 
     // ── Étape 5 : Cascadeurs non assignés → repos ──
-    const auMoinsUnSpectacleJoue = spectaclesSaison.some((s) => {
-      if (!s.joursDiffusion || s.joursDiffusion.length === 0) return true;
-      return s.joursDiffusion.includes(jourSemaine);
-    });
-
     for (const c of disponibles) {
       if (!assignesCeJour.has(c.id)) {
-        if (auMoinsUnSpectacleJoue) {
-          entrees.push({
-            date: dateStr,
-            cascadeurId: c.id,
-            assignation: { type: "repos" },
-          });
-          const state = etats.get(c.id)!;
-          state.joursTravaillesConsecutifs = 0;
-          state.joursReposConsecutifs++;
-        }
+        entrees.push({
+          date: dateStr,
+          cascadeurId: c.id,
+          assignation: { type: "repos" },
+        });
+        const state = etats.get(c.id)!;
+        state.joursDepuisDernierRepos = 0;
+        state.joursDansRoleActuel = 0;
+        state.dernierRoleSpectacleId = null;
+        state.dernierRoleId = null;
       }
     }
   }
 
-  // ── Étape 6 : REPAIR PASS — Équilibrage final PAR GROUPE typeRepos ──
-  // On tente de swapmer des cascadeurs en avance avec des postes occupés
-  // par des cascadeurs en retard DANS LE MÊME GROUPE typeRepos.
-  const REPAIR_ITERATIONS = 10;
+  // ── Étape 6 : REPAIR PASS — Équilibrage final ──
+  // Swapper cascadeur MAX (travaille trop) avec cascadeur MIN (travaille pas assez)
+  // UNIQUEMENT quand le MIN peut jouer le rôle du MAX (primaire ou secondaire)
+  const REPAIR_ITERATIONS = 50;
   for (let iter = 0; iter < REPAIR_ITERATIONS; iter++) {
-    // Recalculer les totaux par cascadeur
+    // Recalculer les totaux
     const totaux = new Map<string, number>();
-    for (const c of cascadeurs) {
+    for (const c of cascadeursActifs) {
       totaux.set(c.id, 0);
     }
     for (const e of entrees) {
@@ -432,109 +406,165 @@ export function genererPlanning(
       }
     }
 
-    // Grouper par typeRepos
-    const groupes = new Map<string, Cascadeur[]>();
-    for (const c of cascadeurs) {
-      if (!groupes.has(c.typeRepos)) groupes.set(c.typeRepos, []);
-      groupes.get(c.typeRepos)!.push(c);
+    // Trier par totalJoursTravailles
+    const sorted = cascadeursActifs
+      .map((c) => ({ id: c.id, total: totaux.get(c.id) || 0, cascadeur: c }))
+      .sort((a, b) => a.total - b.total);
+
+    const min = sorted[0];
+    const max = sorted[sorted.length - 1];
+
+    if (max.total - min.total <= 1) break; // Équilibré (±1)
+
+    // Indexer les entrées par date+cascadeur
+    const entreesIndex = new Map<string, EntreePlanning>();
+    for (const e of entrees) {
+      entreesIndex.set(`${e.date}|${e.cascadeurId}`, e);
     }
 
-    let anySwap = false;
+    let swapped = false;
+    const allDates = Array.from(new Set(entrees.map((e) => e.date))).sort();
 
-    for (const [, membres] of groupes) {
-      // Trouver le cascadeur avec le MAX et celui avec le MIN dans ce groupe
-      let maxId = "";
-      let maxVal = -1;
-      let minId = "";
-      let minVal = Infinity;
-      for (const m of membres) {
-        const val = totaux.get(m.id) || 0;
-        if (val > maxVal) { maxVal = val; maxId = m.id; }
-        if (val < minVal) { minVal = val; minId = m.id; }
-      }
+    for (const dateStr of allDates) {
+      const entryMax = entreesIndex.get(`${dateStr}|${max.id}`);
+      const entryMin = entreesIndex.get(`${dateStr}|${min.id}`);
 
-      if (maxVal - minVal <= 1) continue; // Déjà équilibré dans ce groupe
+      if (!entryMax || !entryMin) continue;
+      if (entryMax.assignation.type !== "travail") continue;
+      if (entryMin.assignation.type !== "repos") continue;
 
-      const cascadeurMax = membres.find((c) => c.id === maxId)!;
-      const cascadeurMin = membres.find((c) => c.id === minId)!;
+      // Vérifier que min peut jouer le rôle de max
+      const { spectacleId, roleId } = entryMax.assignation;
+      if (!getPriorite(min.cascadeur, spectacleId, roleId)) continue;
+      if (isAbsent(min.cascadeur, dateStr)) continue;
 
-      // Indexer les entrées par date+cascadeur
-      const entreesIndex = new Map<string, EntreePlanning>();
-      for (const e of entrees) {
-        entreesIndex.set(`${e.date}|${e.cascadeurId}`, e);
-      }
-
-      let swapped = false;
-      const allDates = Array.from(new Set(entrees.map((e) => e.date))).sort();
-      for (const dateStr of allDates) {
-        const entryMax = entreesIndex.get(`${dateStr}|${maxId}`);
-        const entryMin = entreesIndex.get(`${dateStr}|${minId}`);
-
-        if (!entryMax || !entryMin) continue;
-        if (entryMax.assignation.type !== "travail") continue;
-        if (entryMin.assignation.type !== "repos") continue;
-
-        // Vérifier que minId peut jouer le rôle de maxId
-        const spectacleId = entryMax.assignation.spectacleId;
-        const roleId = entryMax.assignation.roleId;
-        if (!peutJouerRole(cascadeurMin, spectacleId, roleId)) continue;
-        if (isAbsent(cascadeurMin, dateStr)) continue;
-
-        // SWAP : maxId → repos, minId → travail
-        entryMax.assignation = { type: "repos" };
-        entryMin.assignation = {
-          type: "travail",
-          spectacleId,
-          roleId,
-        };
-        swapped = true;
-        anySwap = true;
-        break; // Un swap par groupe par itération
-      }
-
-      if (swapped) break; // Recommencer le recalcul des totaux
+      // SWAP : max → repos, min → travail
+      entryMax.assignation = { type: "repos" };
+      entryMin.assignation = { type: "travail", spectacleId, roleId };
+      swapped = true;
+      break;
     }
 
-    // Si aucun swap n'a été possible dans AUCUN groupe, essayer de forcer
-    // le repos du cascadeur MAX même sans remplaçant (poste non-pourvu)
-    if (!anySwap) {
-      let forced = false;
-      for (const [, membres] of groupes) {
-        let maxId = "";
-        let maxVal = -1;
-        let minVal = Infinity;
-        for (const m of membres) {
-          const val = totaux.get(m.id) || 0;
-          if (val > maxVal) { maxVal = val; }
-          if (val < minVal) { minVal = val; }
-        }
-        if (maxVal - minVal <= 1) continue;
+    if (!swapped) break; // Plus aucun swap possible
+  }
 
-        // Forcer le repos du cascadeur MAX un jour où il travaille
-        const entreesIndex2 = new Map<string, EntreePlanning>();
-        for (const e of entrees) {
-          entreesIndex2.set(`${e.date}|${e.cascadeurId}`, e);
-        }
-        const allDates2 = Array.from(new Set(entrees.map((e) => e.date))).sort();
-        for (const dateStr of allDates2) {
-          const entryMax = entreesIndex2.get(`${dateStr}|${maxId}`);
-          if (!entryMax || entryMax.assignation.type !== "travail") continue;
-          // Forcer en repos sans remplaçant
-          entryMax.assignation = { type: "repos" };
-          forced = true;
-          break;
-        }
-        if (forced) break;
-      }
-      if (!forced) break; // Rien à faire
+  // ── Étape 7 : Rapport d'équité ──
+  // Recalculer les totaux finaux
+  const totauxFinaux = new Map<string, number>();
+  for (const c of cascadeursActifs) {
+    totauxFinaux.set(c.id, 0);
+  }
+  for (const e of entrees) {
+    if (e.assignation.type === "travail") {
+      totauxFinaux.set(e.cascadeurId, (totauxFinaux.get(e.cascadeurId) || 0) + 1);
     }
   }
 
+  // Grouper par typeRepos et vérifier l'équité
+  const groupes = new Map<string, typeof cascadeursActifs>();
+  for (const c of cascadeursActifs) {
+    if (!groupes.has(c.typeRepos)) groupes.set(c.typeRepos, []);
+    groupes.get(c.typeRepos)!.push(c);
+  }
+
+  for (const [typeRepos, membres] of groupes) {
+    const vals = membres.map((c) => ({
+      cascadeur: c,
+      total: totauxFinaux.get(c.id) || 0,
+    }));
+    const minVal = Math.min(...vals.map((v) => v.total));
+    const maxVal = Math.max(...vals.map((v) => v.total));
+    const ecart = maxVal - minVal;
+
+    if (ecart > 1) {
+      // Inéquité détectée → expliquer pourquoi
+      const trop = vals.filter((v) => v.total === maxVal);
+      const peu = vals.filter((v) => v.total === minVal);
+
+      rapport.push({
+        type: "warning",
+        message: `Équité ${typeRepos} non atteinte (écart ${ecart} jours) : ${trop.map((v) => v.cascadeur.prenom + " " + v.cascadeur.nom + " (" + v.total + "j)").join(", ")} travaillent plus que ${peu.map((v) => v.cascadeur.prenom + " " + v.cascadeur.nom + " (" + v.total + "j)").join(", ")}.`,
+      });
+
+      // Analyser pourquoi : quels rôles ne peuvent pas être swappés ?
+      for (const t of trop) {
+        // Pour chaque entrée travail de ce cascadeur, vérifier s'il a des remplaçants
+        for (const e of entrees) {
+          if (e.cascadeurId !== t.cascadeur.id || e.assignation.type !== "travail") continue;
+          const { spectacleId, roleId } = e.assignation;
+          const spectacle = spectaclesSaison.find((s) => s.id === spectacleId);
+          const role = spectacle?.roles.find((r) => r.id === roleId);
+          if (!spectacle || !role) continue;
+
+          const remplaçantsPotentiels = membres.filter(
+            (m) =>
+              m.id !== t.cascadeur.id &&
+              getPriorite(m, spectacleId, roleId) !== null &&
+              !isAbsent(m, e.date)
+          );
+
+          if (remplaçantsPotentiels.length === 0) {
+            rapport.push({
+              type: "warning",
+              message: `${t.cascadeur.prenom} ${t.cascadeur.nom} est surchargé(e) car le rôle "${role.nom}" de "${spectacle.nom}" n'a pas assez de remplaçants disponibles. Ajoutez des cascadeurs avec ce rôle (primaire ou secondaire) pour rééquilibrer.`,
+            });
+            break; // Un seul message par cascadeur surchargé
+          }
+        }
+      }
+    } else {
+      rapport.push({
+        type: "info",
+        message: `Équité ${typeRepos} : OK (écart ≤ 1 jour, min=${minVal}, max=${maxVal}).`,
+      });
+    }
+  }
+
+  // Compter les postes non remplis
+  // On vérifie si tous les postes ont été pourvus chaque jour
+  let postesNonRemplis = 0;
+  for (const jour of jours) {
+    const dateStr = format(jour, "yyyy-MM-dd");
+    const jourSemaine = getJourSemaine(dateStr);
+    const entreesJour = entrees.filter((e) => e.date === dateStr);
+
+    for (const spectacle of spectaclesSaison) {
+      if (
+        spectacle.joursDiffusion &&
+        spectacle.joursDiffusion.length > 0 &&
+        !spectacle.joursDiffusion.includes(jourSemaine)
+      ) {
+        continue;
+      }
+      for (const role of spectacle.roles) {
+        const nbAssignes = entreesJour.filter(
+          (e) =>
+            e.assignation.type === "travail" &&
+            e.assignation.spectacleId === spectacle.id &&
+            e.assignation.roleId === role.id
+        ).length;
+        if (nbAssignes < role.nbCascadeursRequis) {
+          postesNonRemplis += role.nbCascadeursRequis - nbAssignes;
+        }
+      }
+    }
+  }
+
+  if (postesNonRemplis > 0) {
+    rapport.push({
+      type: "warning",
+      message: `${postesNonRemplis} poste(s) n'ont pas pu être rempli(s) sur la saison. Cela signifie qu'il n'y a pas assez de cascadeurs disponibles pour couvrir tous les rôles. Ajoutez des cascadeurs ou réduisez le nombre de rôles requis.`,
+    });
+  }
+
   return {
-    id: uuidv4(),
-    saisonId: saison.id,
-    entrees,
-    dateGeneration: new Date().toISOString(),
+    planning: {
+      id: uuidv4(),
+      saisonId: saison.id,
+      entrees,
+      dateGeneration: new Date().toISOString(),
+    },
+    rapport,
   };
 }
 
@@ -704,7 +734,6 @@ export function detecterConflits(
         state.dernierRoleSpectacleId = null;
         state.dernierRoleId = null;
       }
-      // "absent" → on ne touche pas aux compteurs (géré dans l'algo principal)
     }
   }
 

@@ -174,16 +174,30 @@ export default function PlanningPage() {
 
     // Petit délai pour montrer le loading
     setTimeout(() => {
-      const nouveauPlanning = genererPlanning(
+      const resultat = genererPlanning(
         selectedSaison,
         spectacles,
         cascadeurs,
         { contraintesEnchainement: contraintes }
       );
 
-      savePlanning(nouveauPlanning);
-      setPlanning(nouveauPlanning);
+      savePlanning(resultat.planning);
+      setPlanning(resultat.planning);
       setGenerating(false);
+
+      // Afficher les warnings du rapport
+      if (resultat.rapport.length > 0) {
+        const warnings = resultat.rapport.filter((r) => r.type === "warning");
+        const infos = resultat.rapport.filter((r) => r.type === "info");
+        let message = "";
+        if (warnings.length > 0) {
+          message += "⚠️ Avertissements :\n" + warnings.map((r) => "• " + r.message).join("\n") + "\n\n";
+        }
+        if (infos.length > 0) {
+          message += "✅ " + infos.map((r) => r.message).join("\n");
+        }
+        alert(message);
+      }
     }, 100);
   }
 
