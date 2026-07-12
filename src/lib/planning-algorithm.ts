@@ -139,7 +139,8 @@ function calculerScore(
   roleId: string,
   contraintes: ContrainteEnchainement[],
   dateStr: string,
-  etats: Map<string, CascadeurState>
+  etats: Map<string, CascadeurState>,
+  cascadeurs: Cascadeur[]
 ): number {
   // Ne peut pas jouer ce rôle → score infini
   const priorite = peutJouerRole(cascadeur, spectacleId, roleId);
@@ -171,16 +172,21 @@ function calculerScore(
   }
 
   // Équilibrage : pénaliser les cascadeurs qui ont déjà plus de jours travaillés
-  // Calculer la moyenne des jours travaillés parmi tous les cascadeurs actifs
-  let totalJours = 0;
-  let nbCascadeurs = 0;
-  for (const [, s] of etats) {
-    totalJours += s.totalJoursTravailles;
-    nbCascadeurs++;
+  // Calculer la moyenne PAR GROUPE DE TYPEREPOS (5j/1 et 6j/1 séparément)
+  // pour que chaque cascadeur soit comparé aux autres du même type
+  let totalJoursGroupe = 0;
+  let nbCascadeursGroupe = 0;
+  for (const [id, s] of etats) {
+    // Trouver le cascadeur correspondant pour vérifier son typeRepos
+    const c = cascadeurs.find((c) => c.id === id);
+    if (c && c.typeRepos === cascadeur.typeRepos) {
+      totalJoursGroupe += s.totalJoursTravailles;
+      nbCascadeursGroupe++;
+    }
   }
-  const moyenne = nbCascadeurs > 0 ? totalJours / nbCascadeurs : 0;
-  // Écart par rapport à la moyenne (positif = trop de jours)
-  const ecart = state.totalJoursTravailles - moyenne;
+  const moyenneGroupe = nbCascadeursGroupe > 0 ? totalJoursGroupe / nbCascadeursGroupe : 0;
+  // Écart par rapport à la moyenne du groupe (positif = trop de jours)
+  const ecart = state.totalJoursTravailles - moyenneGroupe;
   // Pénalité forte : chaque jour d'écart = 500 points
   // Cela dépasse la continuité (200) pour forcer l'équilibrage
   score += ecart * 500;
@@ -328,7 +334,8 @@ export function genererPlanning(
               role.id,
               config.contraintesEnchainement,
               dateStr,
-              etats
+              etats,
+              cascadeursActifs
             ),
           }))
           .filter((c) => c.score < Infinity)
