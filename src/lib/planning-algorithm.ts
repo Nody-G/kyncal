@@ -133,24 +133,29 @@ function calculerScore(
   // Exclusions → score infini
   if (!getPriorite(cascadeur, spectacleId, roleId)) return Infinity;
   if (isAbsent(cascadeur, dateStr)) return Infinity;
-  const maxJours = getMaxJoursAvantRepos(cascadeur.typeRepos);
-  if (state.joursDepuisDernierRepos >= maxJours) return Infinity;
   if (!respecteEnchainement(state, spectacleId, roleId, contraintes)) return Infinity;
 
-  // Équilibrage : totalJoursTravailles domine tout
-  let score = state.totalJoursTravailles * 1000;
+  // Équilibrage normalisé par typeRepos :
+  // score = totalJoursTravailles / maxJours × 1000
+  // Cela garantit un ratio 6:5 entre les groupes.
+  // Ex: 6j/1 à 30j → 30/6×1000 = 5000, 5j/1 à 30j → 30/5×1000 = 6000
+  // → 6j/1 préféré → les 6j/1 travaillent naturellement plus
+  const maxJours = getMaxJoursAvantRepos(cascadeur.typeRepos);
+  let score = (state.totalJoursTravailles / maxJours) * 1000;
+
+  // Pénalité si le cascadeur a dépassé son max de jours consécutifs
+  if (state.joursDepuisDernierRepos >= maxJours) {
+    score += 50000; // Forte pénalité — priorité au repos
+  }
 
   // Primaire > secondaire (petit bonus)
   const priorite = getPriorite(cascadeur, spectacleId, roleId);
   if (priorite === "secondaire") score += 10;
 
   // Bonus pour cascadeurs avec peu de rôles primaires (rareté)
-  // Moins de rôles = meilleur score (plus prioritaire)
-  // Bonus significatif pour départager les cascadeurs avec le même totalJoursTravailles
   const nbRolesPrimaires = cascadeur.roles.filter(
     (r) => r.priorite === "primaire"
   ).length;
-  // Cascadeur avec 1 rôle → bonus 500, 2 rôles → 400, ..., 5+ rôles → 0
   const bonusRareté = Math.max(0, (6 - nbRolesPrimaires) * 100);
   score -= bonusRareté;
 
@@ -251,7 +256,9 @@ export function genererPlanning(
       }
     }
 
-    // ── Étape 2 : Déterminer qui DOIT prendre un repos ──
+    // ── Étape 2 : Marquer les cascadeurs qui ONT DÉPASSÉ leur max ──
+    // Ils restent disponibles pour l'assignation, mais seront prioritaires pour le repos.
+    // Si après l'assignation ils n'ont pas de rôle, ils prendront un repos forcé.
     const doiventReposer = new Set<string>();
     const disponibles = cascadeursActifs.filter((c) => {
       if (absents.has(c.id)) return false;
@@ -259,16 +266,7 @@ export function genererPlanning(
       const maxJours = getMaxJoursAvantRepos(c.typeRepos);
       if (state.joursDepuisDernierRepos >= maxJours) {
         doiventReposer.add(c.id);
-        entrees.push({
-          date: dateStr,
-          cascadeurId: c.id,
-          assignation: { type: "repos" },
-        });
-        state.joursDepuisDernierRepos = 0;
-        state.joursDansRoleActuel = 0;
-        state.dernierRoleSpectacleId = null;
-        state.dernierRoleId = null;
-        return false;
+        // NE PAS les exclure de disponibles — ils peuvent travailler si pas de remplaçant
       }
       return true;
     });
@@ -383,11 +381,7 @@ export function genererPlanning(
       });
     }
 
-    // ── Étape 5 : Cascadeurs non assignés ──
-    // Les cascadeurs sans poste disponible sont marqués "repos" pour l'affichage,
-    // mais leur compteur joursDepuisDernierRepos N'EST PAS reset.
-    // Seuls les cascadeurs forcés en repos (étape 2) ont le compteur reset.
-    // Cela permet aux 6j/1 de continuer leur streak même s'ils n'ont pas de rôle un jour.
+    // ── Étape 5 : Cascadeurs non assignés + gestion du repos ──
     for (const c of disponibles) {
       if (!assignesCeJour.has(c.id)) {
         entrees.push({
@@ -395,8 +389,17 @@ export function genererPlanning(
           cascadeurId: c.id,
           assignation: { type: "repos" },
         });
-        // PAS de reset de joursDepuisDernierRepos ici !
-        // Le cascadeur garde son streak en cours.
+
+        // Si le cascadeur avait dépassé son max (doiventReposer) ET n'a pas été assigné
+        // → il prend un repos forcé avec reset du compteur
+        if (doiventReposer.has(c.id)) {
+          const state = etats.get(c.id)!;
+          state.joursDepuisDernierRepos = 0;
+          state.joursDansRoleActuel = 0;
+          state.dernierRoleSpectacleId = null;
+          state.dernierRoleId = null;
+        }
+        // Sinon (pas de rôle disponible mais pas en dépassement) → pas de reset
       }
     }
   }
@@ -412,7 +415,7 @@ export function genererPlanning(
   const allDates = Array.from(new Set(entrees.map((e) => e.date))).sort();
 
   // Helper : vérifier si un cascadeur peut travailler un jour donné
-  // (vérifie les contraintes de repos consécutifs)
+  // Vérifie les jours consécutifs AVANT et APRÈS ce jour
   function peutTravaillerLe(
     cascadeurId: string,
     dateStr: string
@@ -421,21 +424,34 @@ export function genererPlanning(
     if (!cascadeur) return false;
     const maxJours = getMaxJoursAvantRepos(cascadeur.typeRepos);
 
-    // Trouver l'index de ce jour dans allDates
     const dateIdx = allDates.indexOf(dateStr);
     if (dateIdx < 0) return false;
 
     // Compter les jours de travail consécutifs AVANT cette date
-    let consecutifs = 0;
+    let avant = 0;
     for (let i = dateIdx - 1; i >= 0; i--) {
       const e = entreesIndex.get(`${allDates[i]}|${cascadeurId}`);
       if (e && e.assignation.type === "travail") {
-        consecutifs++;
+        avant++;
       } else {
         break;
       }
     }
-    return consecutifs < maxJours;
+
+    // Compter les jours de travail consécutifs APRÈS cette date
+    let apres = 0;
+    for (let i = dateIdx + 1; i < allDates.length; i++) {
+      const e = entreesIndex.get(`${allDates[i]}|${cascadeurId}`);
+      if (e && e.assignation.type === "travail") {
+        apres++;
+      } else {
+        break;
+      }
+    }
+
+    // Le streak total serait avant + 1 (ce jour) + apres
+    // Ne doit pas dépasser maxJours
+    return (avant + 1 + apres) <= maxJours;
   }
 
   // Équilibrer chaque groupe typeRepos séparément
