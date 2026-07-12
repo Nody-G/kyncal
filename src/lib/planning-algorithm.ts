@@ -32,9 +32,9 @@ interface CascadeurState {
   dernierRoleSpectacleId: string | null;
   dernierRoleId: string | null;
   joursDansRoleActuel: number;
-  reposPrisCycle: number; // repos pris dans le cycle actuel (6 ou 5 jours)
+  reposPrisCycle: number;
   joursDepuisDernierRepos: number;
-  totalJoursTravailles: number; // total sur la saison (pour équilibrage)
+  totalJoursTravailles: number;
 }
 
 interface AlgorithmeConfig {
@@ -108,7 +108,7 @@ function respecteEnchainement(
       contrainteActuelle &&
       state.joursDansRoleActuel < contrainteActuelle.joursMin
     ) {
-      return false; // n'a pas atteint le minimum dans le rôle actuel
+      return false;
     }
   }
 
@@ -121,60 +121,51 @@ function respecteEnchainement(
       contrainte.joursMax > 0 &&
       state.joursDansRoleActuel >= contrainte.joursMax
     ) {
-      return false; // a atteint le maximum dans ce rôle
+      return false;
     }
   }
 
   return true;
 }
 
+// ============================================================
+// SCORE D'ÉQUITÉ — totalJoursTravailles DOMINE
+// ============================================================
+
 /**
- * Calcule le score de priorité pour attribuer un cascadeur à un rôle
- * Score plus bas = meilleure priorité
+ * Calcule le score d'équité pour un cascadeur.
+ * Score plus BAS = meilleur candidat.
  *
- * Stratégie d'équilibrage :
- * - Le facteur DOMINANT est totalJoursTravailles dans le groupe typeRepos
- * - Le cascadeur avec le MOINS de jours travaillés dans son groupe gagne
- * - Les critères secondaires (primaire, continuité, repos) ne départagent
- *   QUE les cascadeurs ayant exactement le même nombre de jours travaillés
- * - Cela garantit une stricte équité par groupe typeRepos
+ * Le facteur DOMINANT est totalJoursTravailles (×100000).
+ * Le cascadeur avec le MOINS de jours travaillés gagne TOUJOURS.
+ * Les critères secondaires ne départagent qu'à égalité parfaite.
  */
-function calculerScore(
+function calculerScoreEquite(
   cascadeur: Cascadeur,
   state: CascadeurState,
   spectacleId: string,
   roleId: string,
   contraintes: ContrainteEnchainement[],
-  dateStr: string,
-  etats: Map<string, CascadeurState>,
-  cascadeurs: Cascadeur[]
+  dateStr: string
 ): number {
-  // Ne peut pas jouer ce rôle → score infini
-  const priorite = peutJouerRole(cascadeur, spectacleId, roleId);
-  if (!priorite) return Infinity;
-
-  // Absent → score infini
+  // Exclusions → score infini
+  if (!peutJouerRole(cascadeur, spectacleId, roleId)) return Infinity;
   if (isAbsent(cascadeur, dateStr)) return Infinity;
-
-  // Doit prendre un repos aujourd'hui
   const maxJours = getMaxJoursAvantRepos(cascadeur.typeRepos);
   if (state.joursDepuisDernierRepos >= maxJours) return Infinity;
-
-  // Ne respecte pas les contraintes d'enchaînement
   if (!respecteEnchainement(state, spectacleId, roleId, contraintes))
     return Infinity;
 
-  // ── Équilibrage par groupe typeRepos (facteur DOMINANT) ──
-  // totalJoursTravailles × 100000 garantit que le cascadeur avec le moins
-  // de jours travaillés dans son groupe est TOUJOURS choisi en premier.
-  // Les critères secondaires (max ~2000) ne peuvent jamais renverser un écart
-  // d'au moins 1 jour travaillé (100000 points).
+  // ── Équilibrage : totalJoursTravailles × 100000 ──
+  // 1 seul jour de différence = 100000 points d'écart.
+  // Les critères secondaires (max ~2000) ne peuvent JAMAIS renverser ça.
   const scoreEquilibrage = state.totalJoursTravailles * 100000;
 
   // ── Critères secondaires (ne comptent que si totalJoursTravailles égaux) ──
   let scoreSecondaire = 0;
 
   // Primaire a priorité sur secondaire
+  const priorite = peutJouerRole(cascadeur, spectacleId, roleId);
   if (priorite === "primaire") scoreSecondaire -= 1000;
   else scoreSecondaire -= 500;
 
@@ -200,7 +191,15 @@ function calculerScore(
 // ============================================================
 
 /**
- * Génère un planning complet pour une saison
+ * Génère un planning complet pour une saison.
+ *
+ * APPROCHE PAR JOUR (pas rôle par rôle) :
+ * 1. Pour chaque jour, collecter TOUS les postes ouverts (spectacle+roleId)
+ * 2. Pour chaque cascadeur disponible, calculer son MEILLEUR score parmi
+ *    tous les postes (en tenant compte de primaire/secondaire)
+ * 3. Trier les cascadeurs par totalJoursTravailles croissant
+ * 4. Assigner le cascadeur le moins travaillé à son meilleur poste disponible
+ * 5. Répéter jusqu'à remplir tous les postes ou épuiser les cascadeurs
  */
 export function genererPlanning(
   saison: Saison,
@@ -237,22 +236,25 @@ export function genererPlanning(
   }
 
   const entrees: EntreePlanning[] = [];
-  // Map: "date_spectacleId_roleId" → cascadeurIds assignés
-  const assignations = new Map<string, string[]>();
 
   for (const jour of jours) {
     const dateStr = format(jour, "yyyy-MM-dd");
+    const jourSemaine = getJourSemaine(dateStr);
 
-    // Set des cascadeurs déjà assignés à un rôle ce jour (1 rôle max par cascadeur par jour)
-    const assignesCeJour = new Set<string>();
-
-    // ---- Étape 1 : Gérer les absences ----
+    // ── Étape 1 : Gérer les absences ──
+    const absents = new Set<string>();
     for (const c of cascadeursActifs) {
       if (isAbsent(c, dateStr)) {
+        absents.add(c.id);
         entrees.push({
           date: dateStr,
           cascadeurId: c.id,
-          assignation: { type: "absent", motif: c.absences.find((a) => dateStr >= a.dateDebut && dateStr <= a.dateFin)!.motif },
+          assignation: {
+            type: "absent",
+            motif: c.absences.find(
+              (a) => dateStr >= a.dateDebut && dateStr <= a.dateFin
+            )!.motif,
+          },
         });
         const state = etats.get(c.id)!;
         state.joursTravaillesConsecutifs = 0;
@@ -264,133 +266,143 @@ export function genererPlanning(
       }
     }
 
-    // ---- Étape 2 : Déterminer qui DOIT prendre un repos ----
-    const cascadeursDisponibles = cascadeursActifs.filter(
-      (c) => !isAbsent(c, dateStr)
-    );
-
-    const cascadeursDoiventReposer: Set<string> = new Set();
-    const cascadeursPeuventTravailler: typeof cascadeursActifs = [];
-
-    for (const c of cascadeursDisponibles) {
+    // ── Étape 2 : Déterminer qui DOIT prendre un repos ──
+    const doiventReposer = new Set<string>();
+    const disponibles = cascadeursActifs.filter((c) => {
+      if (absents.has(c.id)) return false;
       const state = etats.get(c.id)!;
       const maxJours = getMaxJoursAvantRepos(c.typeRepos);
-
       if (state.joursDepuisDernierRepos >= maxJours) {
-        cascadeursDoiventReposer.add(c.id);
-        // Assigner le repos
+        doiventReposer.add(c.id);
+        // Assigner le repos obligatoire
         entrees.push({
           date: dateStr,
           cascadeurId: c.id,
           assignation: { type: "repos" },
         });
-        // Mettre à jour l'état
         state.joursTravaillesConsecutifs = 0;
         state.joursReposConsecutifs = 1;
         state.joursDepuisDernierRepos = 0;
         state.joursDansRoleActuel = 0;
         state.dernierRoleSpectacleId = null;
         state.dernierRoleId = null;
-      } else {
-        cascadeursPeuventTravailler.push(c);
+        return false;
       }
-    }
+      return true;
+    });
 
-    // ---- Étape 3 : Assigner les rôles pour chaque spectacle ----
-    const jourSemaine = getJourSemaine(dateStr);
+    // ── Étape 3 : Collecter les postes ouverts ce jour ──
+    interface PosteOuvert {
+      spectacleId: string;
+      roleId: string;
+      spectacle: Spectacle;
+    }
+    const postesOuverts: PosteOuvert[] = [];
+
     for (const spectacle of spectaclesSaison) {
-      // Ne planifier que les jours de diffusion du spectacle
       if (
         spectacle.joursDiffusion &&
         spectacle.joursDiffusion.length > 0 &&
         !spectacle.joursDiffusion.includes(jourSemaine)
       ) {
-        continue; // Ce spectacle ne joue pas ce jour
+        continue;
       }
-
       for (const role of spectacle.roles) {
-        const key = `${dateStr}_${spectacle.id}_${role.id}`;
-        const assignes: string[] = [];
-
-        // Combien de cascadeurs sont nécessaires ?
-        const nbRequis = role.nbCascadeursRequis;
-
-        // Trier les cascadeurs disponibles par score (meilleur d'abord)
-        // Exclure ceux déjà assignés à un AUTRE rôle ce jour (un cascadeur = 1 rôle/jour)
-        const candidats = cascadeursPeuventTravailler
-          .filter((c) => !assignes.includes(c.id))
-          .filter((c) => !assignesCeJour.has(c.id)) // déjà assigné à un rôle ce jour
-          .map((c) => ({
-            cascadeur: c,
-            score: calculerScore(
-              c,
-              etats.get(c.id)!,
-              spectacle.id,
-              role.id,
-              config.contraintesEnchainement,
-              dateStr,
-              etats,
-              cascadeursActifs
-            ),
-          }))
-          .filter((c) => c.score < Infinity)
-          .sort((a, b) => a.score - b.score);
-
-        for (const candidat of candidats) {
-          if (assignes.length >= nbRequis) break;
-
-          assignes.push(candidat.cascadeur.id);
-          assignesCeJour.add(candidat.cascadeur.id);
-
-          const state = etats.get(candidat.cascadeur.id)!;
-
-          // Si le cascadeur change de rôle, réinitialiser le compteur
-          if (
-            state.dernierRoleSpectacleId !== spectacle.id ||
-            state.dernierRoleId !== role.id
-          ) {
-            state.joursDansRoleActuel = 0;
-          }
-
-          state.joursTravaillesConsecutifs++;
-          state.joursReposConsecutifs = 0;
-          state.joursDepuisDernierRepos++;
-          state.joursDansRoleActuel++;
-          state.totalJoursTravailles++;
-          state.dernierRoleSpectacleId = spectacle.id;
-          state.dernierRoleId = role.id;
-
-          entrees.push({
-            date: dateStr,
-            cascadeurId: candidat.cascadeur.id,
-            assignation: {
-              type: "travail",
-              spectacleId: spectacle.id,
-              roleId: role.id,
-            },
+        for (let i = 0; i < role.nbCascadeursRequis; i++) {
+          postesOuverts.push({
+            spectacleId: spectacle.id,
+            roleId: role.id,
+            spectacle,
           });
         }
-
-        assignations.set(key, assignes);
       }
     }
 
-    // ---- Étape 4 : Gérer les cascadeurs non assignés ----
-    const tousAssignes = new Set<string>();
-    for (const entry of entrees.filter((e) => e.date === dateStr)) {
-      tousAssignes.add(entry.cascadeurId);
+    // ── Étape 4 : Assignation équitable par jour ──
+    // On assigne les cascadeurs un par un, en priorisant ceux avec le
+    // MOINS de totalJoursTravailles. Chaque cascadeur est assigné au
+    // MEILLEUR poste pour lui (primaire > secondaire, continuité, etc.)
+    const assignesCeJour = new Set<string>();
+    const postesRestants = [...postesOuverts]; // copie mutable
+
+    while (postesRestants.length > 0) {
+      // Chercher le meilleur cascadeur pour le prochain poste
+      // On teste chaque cascadeur contre chaque poste et on prend
+      // la meilleure combinaison (score le plus bas)
+      let meilleurScore = Infinity;
+      let meilleurCascadeur: (typeof disponibles)[number] | null = null;
+      let meilleurPosteIdx = -1;
+
+      for (const c of disponibles) {
+        if (assignesCeJour.has(c.id)) continue;
+        const state = etats.get(c.id)!;
+
+        for (let pi = 0; pi < postesRestants.length; pi++) {
+          const poste = postesRestants[pi];
+          const score = calculerScoreEquite(
+            c,
+            state,
+            poste.spectacleId,
+            poste.roleId,
+            config.contraintesEnchainement,
+            dateStr
+          );
+          if (score < meilleurScore) {
+            meilleurScore = score;
+            meilleurCascadeur = c;
+            meilleurPosteIdx = pi;
+          }
+        }
+      }
+
+      if (!meilleurCascadeur || meilleurScore === Infinity) {
+        // Plus aucun cascadeur ne peut remplir les postes restants
+        break;
+      }
+
+      // Assigner le meilleur cascadeur au poste
+      const poste = postesRestants[meilleurPosteIdx];
+      postesRestants.splice(meilleurPosteIdx, 1);
+      assignesCeJour.add(meilleurCascadeur.id);
+
+      const state = etats.get(meilleurCascadeur.id)!;
+
+      // Si le cascadeur change de rôle, réinitialiser le compteur
+      if (
+        state.dernierRoleSpectacleId !== poste.spectacleId ||
+        state.dernierRoleId !== poste.roleId
+      ) {
+        state.joursDansRoleActuel = 0;
+      }
+
+      state.joursTravaillesConsecutifs++;
+      state.joursReposConsecutifs = 0;
+      state.joursDepuisDernierRepos++;
+      state.joursDansRoleActuel++;
+      state.totalJoursTravailles++;
+      state.dernierRoleSpectacleId = poste.spectacleId;
+      state.dernierRoleId = poste.roleId;
+
+      entrees.push({
+        date: dateStr,
+        cascadeurId: meilleurCascadeur.id,
+        assignation: {
+          type: "travail",
+          spectacleId: poste.spectacleId,
+          roleId: poste.roleId,
+        },
+      });
     }
 
-    // Déterminer si au moins un spectacle joue ce jour
+    // ── Étape 5 : Cascadeurs non assignés → repos ──
     const auMoinsUnSpectacleJoue = spectaclesSaison.some((s) => {
       if (!s.joursDiffusion || s.joursDiffusion.length === 0) return true;
       return s.joursDiffusion.includes(jourSemaine);
     });
 
-    for (const c of cascadeursPeuventTravailler) {
-      if (!tousAssignes.has(c.id)) {
+    for (const c of disponibles) {
+      if (!assignesCeJour.has(c.id)) {
         if (auMoinsUnSpectacleJoue) {
-          // Un spectacle joue mais ce cascadeur n'a pas été assigné → repos
           entrees.push({
             date: dateStr,
             cascadeurId: c.id,
@@ -399,14 +411,7 @@ export function genererPlanning(
           const state = etats.get(c.id)!;
           state.joursTravaillesConsecutifs = 0;
           state.joursReposConsecutifs++;
-          // Note : joursDepuisDernierRepos n'est PAS incrémenté ici.
-          // Ce compteur ne reflète que les jours TRAVAILLÉS consécutifs,
-          // pas les jours calendaires. Un jour non-assigné n'avance pas
-          // le cycle de repos obligatoire.
         }
-        // Si aucun spectacle ne joue ce jour, c'est un jour "libre" :
-        // on ne crée pas d'entrée et on ne touche pas au compteur de repos.
-        // Le cascadeur garde son cycle en cours (joursDepuisDernierRepos intact).
       }
     }
   }
@@ -419,41 +424,20 @@ export function genererPlanning(
   };
 }
 
-/**
- * Recalcule partiellement un planning suite à une absence
- * Ne modifie que les jours affectés et les cascadeurs impactés
- */
-export function recalculPartiel(
-  planning: Planning,
-  cascadeurId: string,
-  dateDebut: string,
-  dateFin: string,
-  saison: Saison,
-  spectacles: Spectacle[],
-  cascadeurs: Cascadeur[],
-  config: AlgorithmeConfig
-): Planning {
-  // Pour l'instant, on régénère tout
-  // TODO: implémenter le vrai recalcul partiel
-  const nouveauPlanning = genererPlanning(
-    saison,
-    spectacles,
-    cascadeurs,
-    config
-  );
-  nouveauPlanning.id = planning.id; // garder le même ID
-  return nouveauPlanning;
-}
-
 // ============================================================
 // DÉTECTION DE CONFLITS
 // ============================================================
 
 export interface Conflit {
-  type: "repos_manque" | "double_assignation" | "role_indisponible" | "absence_travaille";
+  type:
+    | "double_assignation"
+    | "repos_non_respecte"
+    | "enchainement_min"
+    | "enchainement_max"
+    | "role_manquant";
   date: string;
   cascadeurId: string;
-  message: string;
+  detail: string;
 }
 
 /**
@@ -463,70 +447,152 @@ export function detecterConflits(
   planning: Planning,
   cascadeurs: Cascadeur[],
   spectacles: Spectacle[],
-  contraintes: ContrainteEnchainement[]
+  config: AlgorithmeConfig
 ): Conflit[] {
   const conflits: Conflit[] = [];
 
   // Grouper les entrées par date
-  const parDate = new Map<string, EntreePlanning[]>();
-  for (const entry of planning.entrees) {
-    if (!parDate.has(entry.date)) parDate.set(entry.date, []);
-    parDate.get(entry.date)!.push(entry);
+  const entreesParDate = new Map<string, EntreePlanning[]>();
+  for (const entree of planning.entrees) {
+    const existing = entreesParDate.get(entree.date) || [];
+    existing.push(entree);
+    entreesParDate.set(entree.date, existing);
   }
 
-  // Vérifier les double-assignations (même cascadeur, même jour, 2x travail)
-  for (const [date, entries] of parDate) {
+  // État par cascadeur pour détecter les enchaînements
+  const etatsDetect = new Map<
+    string,
+    {
+      joursDepuisDernierRepos: number;
+      dernierRoleSpectacleId: string | null;
+      dernierRoleId: string | null;
+      joursDansRoleActuel: number;
+    }
+  >();
+
+  for (const c of cascadeurs) {
+    etatsDetect.set(c.id, {
+      joursDepuisDernierRepos: 0,
+      dernierRoleSpectacleId: null,
+      dernierRoleId: null,
+      joursDansRoleActuel: 0,
+    });
+  }
+
+  const dates = Array.from(entreesParDate.keys()).sort();
+
+  for (const dateStr of dates) {
+    const entrees = entreesParDate.get(dateStr)!;
+
+    // Vérifier les double assignations (même cascadeur, 2 rôles le même jour)
     const parCascadeur = new Map<string, EntreePlanning[]>();
-    for (const entry of entries) {
-      if (!parCascadeur.has(entry.cascadeurId)) parCascadeur.set(entry.cascadeurId, []);
-      parCascadeur.get(entry.cascadeurId)!.push(entry);
+    for (const e of entrees) {
+      const existing = parCascadeur.get(e.cascadeurId) || [];
+      existing.push(e);
+      parCascadeur.set(e.cascadeurId, existing);
     }
 
     for (const [cascadeurId, entreesC] of parCascadeur) {
-      const travaux = entreesC.filter((e) => e.assignation.type === "travail");
-      if (travaux.length > 1) {
+      const rolesCeJour = entreesC.filter((e) => e.assignation.type === "travail");
+      if (rolesCeJour.length > 1) {
         conflits.push({
           type: "double_assignation",
-          date,
+          date: dateStr,
           cascadeurId,
-          message: `${getCascadeurName(cascadeurs, cascadeurId)} est assigné à ${travaux.length} spectacles le ${date}`,
+          detail: `Assigné à ${rolesCeJour.length} rôles le même jour`,
         });
       }
     }
-  }
 
-  // Vérifier les repos manquants
-  const dates = [...parDate.keys()].sort();
-  for (const cascadeur of cascadeurs.filter((c) => c.actif)) {
-    let joursConsecutifs = 0;
-    const maxJours = getMaxJoursAvantRepos(cascadeur.typeRepos);
+    // Mettre à jour les états et vérifier les contraintes
+    for (const entree of entrees) {
+      const cascadeur = cascadeurs.find((c) => c.id === entree.cascadeurId);
+      if (!cascadeur) continue;
 
-    for (const date of dates) {
-      const entries = parDate.get(date)?.filter((e) => e.cascadeurId === cascadeur.id) || [];
-      const entry = entries[0];
+      const state = etatsDetect.get(entree.cascadeurId)!;
 
-      if (!entry) continue;
-
-      if (entry.assignation.type === "travail") {
-        joursConsecutifs++;
-        if (joursConsecutifs > maxJours) {
+      if (entree.assignation.type === "travail") {
+        // Vérifier le repos obligatoire
+        const maxJours = getMaxJoursAvantRepos(cascadeur.typeRepos);
+        if (state.joursDepuisDernierRepos >= maxJours) {
           conflits.push({
-            type: "repos_manque",
-            date,
-            cascadeurId: cascadeur.id,
-            message: `${getCascadeurName(cascadeurs, cascadeur.id)} travaille depuis ${joursConsecutifs} jours (max: ${maxJours})`,
+            type: "repos_non_respecte",
+            date: dateStr,
+            cascadeurId: entree.cascadeurId,
+            detail: `Devrait être en repos après ${state.joursDepuisDernierRepos} jours consécutifs (max: ${maxJours})`,
           });
         }
-      } else {
-        joursConsecutifs = 0;
+
+        // Vérifier les contraintes d'enchaînement
+        const { spectacleId, roleId } = entree.assignation;
+
+        // Changement de rôle → vérifier min
+        if (
+          state.dernierRoleSpectacleId &&
+          state.dernierRoleId &&
+          (state.dernierRoleSpectacleId !== spectacleId ||
+            state.dernierRoleId !== roleId)
+        ) {
+          const contrainteActuelle = config.contraintesEnchainement.find(
+            (c) =>
+              c.spectacleId === state.dernierRoleSpectacleId &&
+              c.roleId === state.dernierRoleId
+          );
+          if (
+            contrainteActuelle &&
+            state.joursDansRoleActuel < contrainteActuelle.joursMin
+          ) {
+            conflits.push({
+              type: "enchainement_min",
+              date: dateStr,
+              cascadeurId: entree.cascadeurId,
+              detail: `Quitte le rôle après ${state.joursDansRoleActuel} jours (min: ${contrainteActuelle.joursMin})`,
+            });
+          }
+        }
+
+        // Même rôle → vérifier max
+        if (
+          state.dernierRoleSpectacleId === spectacleId &&
+          state.dernierRoleId === roleId
+        ) {
+          const contrainte = config.contraintesEnchainement.find(
+            (c) => c.spectacleId === spectacleId && c.roleId === roleId
+          );
+          if (
+            contrainte &&
+            contrainte.joursMax > 0 &&
+            state.joursDansRoleActuel >= contrainte.joursMax
+          ) {
+            conflits.push({
+              type: "enchainement_max",
+              date: dateStr,
+              cascadeurId: entree.cascadeurId,
+              detail: `Dépasse le max de jours consécutifs dans ce rôle (${state.joursDansRoleActuel} >= ${contrainte.joursMax})`,
+            });
+          }
+        }
+
+        // Mettre à jour l'état
+        if (
+          state.dernierRoleSpectacleId !== spectacleId ||
+          state.dernierRoleId !== roleId
+        ) {
+          state.joursDansRoleActuel = 0;
+        }
+        state.joursDepuisDernierRepos++;
+        state.joursDansRoleActuel++;
+        state.dernierRoleSpectacleId = spectacleId;
+        state.dernierRoleId = roleId;
+      } else if (entree.assignation.type === "repos") {
+        state.joursDepuisDernierRepos = 0;
+        state.joursDansRoleActuel = 0;
+        state.dernierRoleSpectacleId = null;
+        state.dernierRoleId = null;
       }
+      // "absent" → on ne touche pas aux compteurs (géré dans l'algo principal)
     }
   }
 
   return conflits;
-}
-
-function getCascadeurName(cascadeurs: Cascadeur[], id: string): string {
-  const c = cascadeurs.find((c) => c.id === id);
-  return c ? `${c.prenom} ${c.nom}` : id;
 }

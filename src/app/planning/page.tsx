@@ -495,7 +495,7 @@ export default function PlanningPage() {
             joursMax: 14,
           }))
         );
-        const conflits = detecterConflits(planning, cascadeurs, spectacles, contraintes);
+        const conflits = detecterConflits(planning, cascadeurs, spectacles, { contraintesEnchainement: contraintes });
         if (conflits.length === 0) return null;
         return (
           <Card className="border-amber-500/50 bg-amber-500/5">
@@ -509,7 +509,7 @@ export default function PlanningPage() {
               <div className="space-y-1 max-h-32 overflow-y-auto">
                 {conflits.slice(0, 10).map((c, i) => (
                   <p key={i} className="text-xs text-amber-700 dark:text-amber-300">
-                    • {c.message}
+                    • {c.detail}
                   </p>
                 ))}
                 {conflits.length > 10 && (
