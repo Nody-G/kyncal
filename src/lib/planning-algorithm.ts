@@ -391,10 +391,17 @@ export function genererPlanning(
   }
 
   // ── Étape 6 : REPAIR PASS — Équilibrage final ──
-  // Swapper cascadeur MAX (travaille trop) avec cascadeur MIN (travaille pas assez)
-  // UNIQUEMENT quand le MIN peut jouer le rôle du MAX (primaire ou secondaire)
-  const REPAIR_ITERATIONS = 50;
-  for (let iter = 0; iter < REPAIR_ITERATIONS; iter++) {
+  // Stratégie : pour chaque cascadeur au-dessus de la médiane, chercher à
+  // convertir ses jours de travail excédentaires en repos, et pour chaque
+  // cascadeur en dessous, chercher à convertir ses repos en travail.
+  // On itère jusqu'à convergence (écart ≤ 1) ou plus de progrès possible.
+  const REPAIR_MAX_ITER = 200;
+  let repairIter = 0;
+  let ecartActuel = Infinity;
+
+  while (repairIter < REPAIR_MAX_ITER) {
+    repairIter++;
+
     // Recalculer les totaux
     const totaux = new Map<string, number>();
     for (const c of cascadeursActifs) {
@@ -413,8 +420,11 @@ export function genererPlanning(
 
     const min = sorted[0];
     const max = sorted[sorted.length - 1];
+    const nouvelEcart = max.total - min.total;
 
-    if (max.total - min.total <= 1) break; // Équilibré (±1)
+    if (nouvelEcart <= 1) break; // Équilibré (±1)
+    if (nouvelEcart === ecartActuel) break; // Plus de progrès possible
+    ecartActuel = nouvelEcart;
 
     // Indexer les entrées par date+cascadeur
     const entreesIndex = new Map<string, EntreePlanning>();
@@ -425,7 +435,9 @@ export function genererPlanning(
     let swapped = false;
     const allDates = Array.from(new Set(entrees.map((e) => e.date))).sort();
 
+    // Stratégie 1 : swap direct MAX travail ↔ MIN repos le même jour
     for (const dateStr of allDates) {
+      if (max.total - min.total <= 1) break;
       const entryMax = entreesIndex.get(`${dateStr}|${max.id}`);
       const entryMin = entreesIndex.get(`${dateStr}|${min.id}`);
 
@@ -441,8 +453,41 @@ export function genererPlanning(
       // SWAP : max → repos, min → travail
       entryMax.assignation = { type: "repos" };
       entryMin.assignation = { type: "travail", spectacleId, roleId };
+      max.total--;
+      min.total++;
       swapped = true;
-      break;
+    }
+
+    // Stratégie 2 : si pas de swap direct possible, essayer swap en chaîne
+    // MAX travaille jour X → trouver cascadeur MEDIAN qui est en repos jour X
+    // et qui peut jouer le rôle, puis donner le repos à MAX
+    if (!swapped && max.total - min.total > 1) {
+      for (const dateStr of allDates) {
+        if (max.total - min.total <= 1) break;
+        const entryMax = entreesIndex.get(`${dateStr}|${max.id}`);
+        if (!entryMax || entryMax.assignation.type !== "travail") continue;
+
+        const { spectacleId, roleId } = entryMax.assignation;
+
+        // Chercher un cascadeur disponible ce jour (en repos, pas absent,
+        // a le rôle, et n'a pas déjà trop peu de jours travaillés)
+        for (const mid of sorted) {
+          if (mid.id === max.id || mid.id === min.id) continue;
+          if (mid.total >= max.total - 1) continue; // pas la peine si déjà haut
+          const entryMid = entreesIndex.get(`${dateStr}|${mid.id}`);
+          if (!entryMid || entryMid.assignation.type !== "repos") continue;
+          if (!getPriorite(mid.cascadeur, spectacleId, roleId)) continue;
+          if (isAbsent(mid.cascadeur, dateStr)) continue;
+
+          // SWAP : max → repos, mid → travail
+          entryMax.assignation = { type: "repos" };
+          entryMid.assignation = { type: "travail", spectacleId, roleId };
+          max.total--;
+          mid.total++;
+          swapped = true;
+          break;
+        }
+      }
     }
 
     if (!swapped) break; // Plus aucun swap possible
