@@ -144,6 +144,16 @@ function calculerScore(
   const priorite = getPriorite(cascadeur, spectacleId, roleId);
   if (priorite === "secondaire") score += 10;
 
+  // Bonus pour cascadeurs avec peu de rôles primaires (rareté)
+  // Moins de rôles = meilleur score (plus prioritaire)
+  // Bonus significatif pour départager les cascadeurs avec le même totalJoursTravailles
+  const nbRolesPrimaires = cascadeur.roles.filter(
+    (r) => r.priorite === "primaire"
+  ).length;
+  // Cascadeur avec 1 rôle → bonus 500, 2 rôles → 400, ..., 5+ rôles → 0
+  const bonusRareté = Math.max(0, (6 - nbRolesPrimaires) * 100);
+  score -= bonusRareté;
+
   return score;
 }
 
