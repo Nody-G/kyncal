@@ -44,6 +44,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
   CalendarDays,
   Play,
@@ -51,11 +52,14 @@ import {
   Trash2,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   AlertTriangle,
   CheckCircle,
   Download,
   FileSpreadsheet,
   FileText,
+  Settings2,
 } from "lucide-react";
 import {
   format,
@@ -81,6 +85,8 @@ export default function PlanningPage() {
     startOfWeek(new Date(), { weekStartsOn: 1 })
   );
   const [viewMode, setViewMode] = useState<"calendrier" | "cascadeur">("calendrier");
+  const [showContraintes, setShowContraintes] = useState(false);
+  const [contraintes, setContraintes] = useState<ContrainteEnchainement[]>([]);
 
   const reload = useCallback(() => {
     setSaisons(getSaisons());
@@ -113,6 +119,31 @@ export default function PlanningPage() {
     (s) => selectedSaison?.spectacleIds.includes(s.id)
   );
 
+  // Initialiser les contraintes quand les spectacles de la saison changent
+  useEffect(() => {
+    if (spectaclesSaison.length === 0) {
+      setContraintes([]);
+      return;
+    }
+    setContraintes((prev) => {
+      const nouvelles: ContrainteEnchainement[] = [];
+      for (const sp of spectaclesSaison) {
+        for (const role of sp.roles) {
+          const existante = prev.find(
+            (c) => c.spectacleId === sp.id && c.roleId === role.id
+          );
+          nouvelles.push({
+            spectacleId: sp.id,
+            roleId: role.id,
+            joursMin: existante?.joursMin ?? 3,
+            joursMax: existante?.joursMax ?? 14,
+          });
+        }
+      }
+      return nouvelles;
+    });
+  }, [spectaclesSaison]);
+
   // Jours de la semaine courante
   const weekDays = useMemo(() => {
     const weekEnd = endOfWeek(currentWeekStart, { weekStartsOn: 1 });
@@ -140,19 +171,6 @@ export default function PlanningPage() {
     if (!selectedSaison) return;
 
     setGenerating(true);
-
-    // Construire les contraintes d'enchaînement par défaut
-    const contraintes: ContrainteEnchainement[] = [];
-    for (const sp of spectaclesSaison) {
-      for (const role of sp.roles) {
-        contraintes.push({
-          spectacleId: sp.id,
-          roleId: role.id,
-          joursMin: 3,
-          joursMax: 14,
-        });
-      }
-    }
 
     // Petit délai pour montrer le loading
     setTimeout(() => {
@@ -327,6 +345,103 @@ export default function PlanningPage() {
             <div className="mt-3 flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400">
               <AlertTriangle className="h-4 w-4" />
               Aucun spectacle actif dans cette saison.
+            </div>
+          )}
+
+          {/* Contraintes d'enchaînement */}
+          {selectedSaisonId && spectaclesSaison.length > 0 && (
+            <div className="mt-4">
+              <button
+                type="button"
+                className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+                onClick={() => setShowContraintes(!showContraintes)}
+              >
+                <Settings2 className="h-4 w-4" />
+                Contraintes d&apos;enchaînement (jours consécutifs par rôle)
+                {showContraintes ? (
+                  <ChevronUp className="h-4 w-4" />
+                ) : (
+                  <ChevronDown className="h-4 w-4" />
+                )}
+              </button>
+
+              {showContraintes && (
+                <div className="mt-3 space-y-3 border rounded-lg p-4 bg-muted/30">
+                  <p className="text-xs text-muted-foreground">
+                    Définissez le nombre minimum et maximum de jours consécutifs qu&apos;un cascadeur passe dans chaque rôle avant de pouvoir changer.
+                  </p>
+                  {spectaclesSaison.map((sp) => (
+                    <div key={sp.id} className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="h-3 w-3 rounded-full shrink-0"
+                          style={{ backgroundColor: sp.couleur }}
+                        />
+                        <span className="text-sm font-semibold">{sp.nom}</span>
+                      </div>
+                      <div className="ml-5 space-y-2">
+                        {sp.roles.map((role) => {
+                          const contrainte = contraintes.find(
+                            (c) => c.spectacleId === sp.id && c.roleId === role.id
+                          );
+                          const min = contrainte?.joursMin ?? 3;
+                          const max = contrainte?.joursMax ?? 14;
+
+                          return (
+                            <div
+                              key={role.id}
+                              className="flex items-center gap-3 text-sm"
+                            >
+                              <span className="w-32 truncate">{role.nom}</span>
+                              <div className="flex items-center gap-1.5">
+                                <label className="text-xs text-muted-foreground">Min</label>
+                                <Input
+                                  type="number"
+                                  min={1}
+                                  max={max}
+                                  value={min}
+                                  onChange={(e) => {
+                                    const val = Math.max(1, Math.min(max, parseInt(e.target.value) || 1));
+                                    setContraintes((prev) =>
+                                      prev.map((c) =>
+                                        c.spectacleId === sp.id && c.roleId === role.id
+                                          ? { ...c, joursMin: val }
+                                          : c
+                                      )
+                                    );
+                                  }}
+                                  className="w-16 h-8 text-center"
+                                />
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <label className="text-xs text-muted-foreground">Max</label>
+                                <Input
+                                  type="number"
+                                  min={min}
+                                  max={60}
+                                  value={max}
+                                  onChange={(e) => {
+                                    const val = Math.max(min, Math.min(60, parseInt(e.target.value) || min));
+                                    setContraintes((prev) =>
+                                      prev.map((c) =>
+                                        c.spectacleId === sp.id && c.roleId === role.id
+                                          ? { ...c, joursMax: val }
+                                          : c
+                                      )
+                                    );
+                                  }}
+                                  className="w-16 h-8 text-center"
+                                />
+                              </div>
+                              <span className="text-xs text-muted-foreground">jours</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </CardContent>

@@ -11,6 +11,7 @@ import {
   Settings,
   Clapperboard,
   User,
+  ShieldQuestion,
 } from "lucide-react";
 
 const navItems = [
@@ -33,6 +34,11 @@ const navItems = [
     title: "Saisons",
     href: "/saisons",
     icon: CalendarRange,
+  },
+  {
+    title: "Rôles",
+    href: "/roles",
+    icon: ShieldQuestion,
   },
   {
     title: "Planning",
