@@ -131,6 +131,13 @@ function respecteEnchainement(
 /**
  * Calcule le score de priorité pour attribuer un cascadeur à un rôle
  * Score plus bas = meilleure priorité
+ *
+ * Stratégie d'équilibrage :
+ * - Le facteur DOMINANT est totalJoursTravailles dans le groupe typeRepos
+ * - Le cascadeur avec le MOINS de jours travaillés dans son groupe gagne
+ * - Les critères secondaires (primaire, continuité, repos) ne départagent
+ *   QUE les cascadeurs ayant exactement le même nombre de jours travaillés
+ * - Cela garantit une stricte équité par groupe typeRepos
  */
 function calculerScore(
   cascadeur: Cascadeur,
@@ -157,47 +164,35 @@ function calculerScore(
   if (!respecteEnchainement(state, spectacleId, roleId, contraintes))
     return Infinity;
 
-  let score = 0;
+  // ── Équilibrage par groupe typeRepos (facteur DOMINANT) ──
+  // totalJoursTravailles × 100000 garantit que le cascadeur avec le moins
+  // de jours travaillés dans son groupe est TOUJOURS choisi en premier.
+  // Les critères secondaires (max ~2000) ne peuvent jamais renverser un écart
+  // d'au moins 1 jour travaillé (100000 points).
+  const scoreEquilibrage = state.totalJoursTravailles * 100000;
+
+  // ── Critères secondaires (ne comptent que si totalJoursTravailles égaux) ──
+  let scoreSecondaire = 0;
 
   // Primaire a priorité sur secondaire
-  if (priorite === "primaire") score -= 1000;
-  else score -= 500;
+  if (priorite === "primaire") scoreSecondaire -= 1000;
+  else scoreSecondaire -= 500;
 
   // Bonus si le cascadeur est déjà dans ce rôle (continuité)
   if (
     state.dernierRoleSpectacleId === spectacleId &&
     state.dernierRoleId === roleId
   ) {
-    score -= 200; // forte préférence pour la continuité
+    scoreSecondaire -= 200;
   }
-
-  // Équilibrage : pénaliser les cascadeurs qui ont déjà plus de jours travaillés
-  // Calculer la moyenne PAR GROUPE DE TYPEREPOS (5j/1 et 6j/1 séparément)
-  // pour que chaque cascadeur soit comparé aux autres du même type
-  let totalJoursGroupe = 0;
-  let nbCascadeursGroupe = 0;
-  for (const [id, s] of etats) {
-    // Trouver le cascadeur correspondant pour vérifier son typeRepos
-    const c = cascadeurs.find((c) => c.id === id);
-    if (c && c.typeRepos === cascadeur.typeRepos) {
-      totalJoursGroupe += s.totalJoursTravailles;
-      nbCascadeursGroupe++;
-    }
-  }
-  const moyenneGroupe = nbCascadeursGroupe > 0 ? totalJoursGroupe / nbCascadeursGroupe : 0;
-  // Écart par rapport à la moyenne du groupe (positif = trop de jours)
-  const ecart = state.totalJoursTravailles - moyenneGroupe;
-  // Pénalité massive : chaque jour d'écart = 5000 points
-  // Doit écraser TOUS les autres facteurs (priorité 1000, continuité 200, repos 10/jour)
-  score += ecart * 5000;
 
   // Moins de jours depuis le dernier repos = moins urgent de repos
-  score += state.joursDepuisDernierRepos * 10;
+  scoreSecondaire += state.joursDepuisDernierRepos * 10;
 
   // Moins de jours travaillés consécutifs = mieux réparti
-  score += state.joursTravaillesConsecutifs * 5;
+  scoreSecondaire += state.joursTravaillesConsecutifs * 5;
 
-  return score;
+  return scoreEquilibrage + scoreSecondaire;
 }
 
 // ============================================================
@@ -404,6 +399,10 @@ export function genererPlanning(
           const state = etats.get(c.id)!;
           state.joursTravaillesConsecutifs = 0;
           state.joursReposConsecutifs++;
+          // Note : joursDepuisDernierRepos n'est PAS incrémenté ici.
+          // Ce compteur ne reflète que les jours TRAVAILLÉS consécutifs,
+          // pas les jours calendaires. Un jour non-assigné n'avance pas
+          // le cycle de repos obligatoire.
         }
         // Si aucun spectacle ne joue ce jour, c'est un jour "libre" :
         // on ne crée pas d'entrée et on ne touche pas au compteur de repos.
