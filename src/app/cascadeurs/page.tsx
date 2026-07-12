@@ -44,6 +44,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Plus,
   Pencil,
@@ -140,25 +141,32 @@ export default function CascadeursPage() {
     }
   }
 
-  function addRole() {
-    setFormRoles([
-      ...formRoles,
-      {
-        spectacleId: spectacles[0]?.id || "",
-        roleId: spectacles[0]?.roles[0]?.id || "",
-        priorite: "primaire" as PrioriteRole,
-      },
-    ]);
+  function toggleRole(spectacleId: string, roleId: string, priorite: PrioriteRole) {
+    const existingIndex = formRoles.findIndex(
+      (r) => r.spectacleId === spectacleId && r.roleId === roleId
+    );
+    if (existingIndex >= 0) {
+      const existing = formRoles[existingIndex];
+      if (existing.priorite === priorite) {
+        // Same priority clicked → remove
+        setFormRoles(formRoles.filter((_, i) => i !== existingIndex));
+      } else {
+        // Different priority → switch
+        const newRoles = [...formRoles];
+        newRoles[existingIndex] = { ...existing, priorite };
+        setFormRoles(newRoles);
+      }
+    } else {
+      // Not yet assigned → add
+      setFormRoles([...formRoles, { spectacleId, roleId, priorite }]);
+    }
   }
 
-  function updateRole(index: number, updates: Partial<RoleCascadeur>) {
-    const newRoles = [...formRoles];
-    newRoles[index] = { ...newRoles[index], ...updates };
-    setFormRoles(newRoles);
-  }
-
-  function removeRole(index: number) {
-    setFormRoles(formRoles.filter((_, i) => i !== index));
+  function getAssignedPriority(spectacleId: string, roleId: string): PrioriteRole | null {
+    const found = formRoles.find(
+      (r) => r.spectacleId === spectacleId && r.roleId === roleId
+    );
+    return found?.priorite ?? null;
   }
 
   function getSpectacleName(id: string) {
@@ -413,7 +421,7 @@ export default function CascadeursPage() {
 
       {/* Create / Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-4xl">
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>
               {editingCascadeur ? "Modifier le cascadeur" : "Nouveau cascadeur"}
@@ -470,108 +478,73 @@ export default function CascadeursPage() {
 
             {/* Roles */}
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <Label>Rôles attribués</Label>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={addRole}
-                  disabled={spectacles.length === 0}
-                >
-                  <Plus className="mr-1 h-3 w-3" />
-                  Ajouter un rôle
-                </Button>
-              </div>
+              <Label>Rôles attribués</Label>
 
-              {spectacles.length === 0 && (
+              {spectacles.filter(s => s.actif).length === 0 ? (
                 <p className="text-sm text-muted-foreground">
-                  Créez d&apos;abord un spectacle avec des rôles pour pouvoir les
-                  attribuer.
+                  Créez d&apos;abord un spectacle avec des rôles pour pouvoir les attribuer.
                 </p>
+              ) : (
+                <div className="space-y-3 max-h-[40vh] overflow-y-auto pr-1">
+                  {spectacles.filter(s => s.actif).map((spectacle) => (
+                    <div
+                      key={spectacle.id}
+                      className="rounded-lg border p-3 space-y-2"
+                    >
+                      <div className="flex items-center gap-2">
+                        <div
+                          className="h-3 w-3 rounded-full shrink-0"
+                          style={{ backgroundColor: spectacle.couleur }}
+                        />
+                        <span className="text-sm font-medium">{spectacle.nom}</span>
+                      </div>
+                      {spectacle.roles.length === 0 ? (
+                        <p className="text-xs text-muted-foreground pl-5">
+                          Aucun rôle défini
+                        </p>
+                      ) : (
+                        <div className="space-y-1.5 pl-5">
+                          {spectacle.roles.map((role) => {
+                            const assigned = getAssignedPriority(spectacle.id, role.id);
+                            return (
+                              <div
+                                key={role.id}
+                                className="flex items-center gap-4 text-sm"
+                              >
+                                <span className="min-w-[120px]">{role.nom}</span>
+                                <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                  <Checkbox
+                                    checked={assigned === "primaire"}
+                                    onCheckedChange={() =>
+                                      toggleRole(spectacle.id, role.id, "primaire")
+                                    }
+                                  />
+                                  <span className="text-xs">⭐ Primaire</span>
+                                </label>
+                                <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                  <Checkbox
+                                    checked={assigned === "secondaire"}
+                                    onCheckedChange={() =>
+                                      toggleRole(spectacle.id, role.id, "secondaire")
+                                    }
+                                  />
+                                  <span className="text-xs">Secondaire</span>
+                                </label>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               )}
 
-              {formRoles.map((role, index) => {
-                const spectacle = spectacles.find(
-                  (s) => s.id === role.spectacleId
-                );
-                return (
-                  <div
-                    key={index}
-                    className="flex items-center gap-2 rounded-lg border p-3"
-                  >
-                    <Select
-                      value={role.spectacleId}
-                      onValueChange={(v) => {
-                        if (!v) return;
-                        const sp = spectacles.find((s) => s.id === v);
-                        updateRole(index, {
-                          spectacleId: v,
-                          roleId: sp?.roles[0]?.id || "",
-                        });
-                      }}
-                    >
-                      <SelectTrigger className="flex-1 min-w-0">
-                        <SelectValue>
-                          {(val) => getSpectacleName(val || role.spectacleId)}
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {spectacles.map((s) => (
-                          <SelectItem key={s.id} value={s.id}>
-                            {s.nom}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-
-                    <Select
-                      value={role.roleId}
-                      onValueChange={(v) =>
-                        v && updateRole(index, { roleId: v })
-                      }
-                    >
-                      <SelectTrigger className="flex-1 min-w-0">
-                        <SelectValue>
-                          {(val) => getRoleName(role.spectacleId, val || role.roleId)}
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {spectacle?.roles.map((r) => (
-                          <SelectItem key={r.id} value={r.id}>
-                            {r.nom}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-
-                    <Select
-                      value={role.priorite}
-                      onValueChange={(v) =>
-                        v && updateRole(index, {
-                          priorite: v as PrioriteRole,
-                        })
-                      }
-                    >
-                      <SelectTrigger className="w-[130px] shrink-0">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="primaire">⭐ Primaire</SelectItem>
-                        <SelectItem value="secondaire">Secondaire</SelectItem>
-                      </SelectContent>
-                    </Select>
-
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="shrink-0"
-                      onClick={() => removeRole(index)}
-                    >
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    </Button>
-                  </div>
-                );
-              })}
+              {formRoles.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  {formRoles.length} rôle{formRoles.length > 1 ? "s" : ""} attribué{formRoles.length > 1 ? "s" : ""}
+                </p>
+              )}
             </div>
           </div>
 
